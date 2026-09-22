@@ -1,0 +1,203 @@
+# IRIS built-in theme and reference for custom themes.
+# Copy this file to ~/.config/iris/themes/<name>.toml and change any values.
+
+name = "Ember"
+
+[palette]
+bg0 = "#0B0B0B"
+bg1 = "#141414"
+bg2 = "#1C1C1C"
+bg3 = "#252525"
+fg0 = "#F2EEE9"
+fg1 = "#C9C3BC"
+muted = "#7F766E"
+orange = "#FF7500"
+orange_bright = "#FF8A2B"
+orange_dark = "#C95C00"
+red = "#F25F5C"
+green = "#8BCB82"
+yellow = "#E6C15A"
+blue = "#5B9CF6"
+purple = "#B58AF3"
+cyan = "#58C3C3"
+
+[document]
+foreground = "fg0"
+background = "bg0"
+
+[heading.h1]
+foreground = "orange_bright"
+bold = true
+separator = "double"
+
+[heading.h2]
+foreground = "orange"
+bold = true
+separator = "single"
+
+[heading.h3]
+foreground = "blue"
+bold = true
+
+[heading.h4]
+foreground = "purple"
+bold = true
+
+[heading.h5]
+foreground = "cyan"
+bold = true
+
+[heading.h6]
+foreground = "yellow"
+italic = true
+
+[text.strong]
+foreground = "fg0"
+bold = true
+
+[text.emphasis]
+foreground = "fg1"
+italic = true
+
+[text.strikethrough]
+foreground = "muted"
+strikethrough = true
+
+[inline_code]
+foreground = "orange_bright"
+background = "bg2"
+
+[link]
+foreground = "blue"
+underline = true
+
+[list]
+foreground = "fg0"
+marker_foreground = "orange"
+bullet = "•"
+indent = 2
+
+[quote]
+foreground = "fg1"
+border_foreground = "muted"
+
+[code]
+foreground = "fg0"
+background = "bg1"
+border_foreground = "fg1"
+syntax_theme = "base16-ocean.dark"
+
+[table]
+foreground = "fg0"
+border_foreground = "fg1"
+header_foreground = "orange"
+header_bold = true
+
+[horizontal_rule]
+foreground = "muted"
+
+[task.checked]
+foreground = "green"
+
+[task.unchecked]
+foreground = "muted"
+
+[image]
+foreground = "purple"
+italic = true
+max_height = 14
+
+[html.mark]
+foreground = "bg0"
+background = "yellow"
+
+[html.kbd]
+foreground = "orange_bright"
+background = "bg2"
+bold = true
+
+[html.underline]
+foreground = "fg0"
+underline = true
+
+[html.subtle]
+foreground = "muted"
+italic = true
+
+# Symbols are separate from styling so the same theme works with and without a Nerd Font.
+# IRIS defaults to `nerd-font`; users can select the fallback with `--icons unicode`.
+[symbols.nerd_font]
+task_checked = "󰄲"
+task_unchecked = "󰄱"
+alert_note = "󰋽"
+alert_tip = "󰌶"
+alert_important = "󰅾"
+alert_warning = "󰀪"
+alert_caution = "󰅚"
+image = "󰋩"
+
+[symbols.unicode]
+task_checked = "☑"
+task_unchecked = "☐"
+alert_note = "ℹ"
+alert_tip = "◆"
+alert_important = "●"
+alert_warning = "⚠"
+alert_caution = "✖"
+image = "▣"
+
+[alert.note]
+foreground = "blue"
+bold = true
+
+[alert.tip]
+foreground = "green"
+bold = true
+
+[alert.important]
+foreground = "purple"
+bold = true
+
+[alert.warning]
+foreground = "yellow"
+bold = true
+
+[alert.caution]
+foreground = "red"
+bold = true
+
+[search.match]
+foreground = "fg0"
+background = "bg3"
+
+[search.current]
+foreground = "bg0"
+background = "orange"
+bold = true
+
+[search.prompt]
+foreground = "orange_bright"
+bold = true
+
+[ui.status]
+foreground = "muted"
+background = "bg1"
+
+[ui.status_accent]
+foreground = "orange"
+bold = true
+
+[ui.help]
+foreground = "fg0"
+background = "bg1"
+
+[ui.help_border]
+foreground = "orange"
+
+[ui.help_heading]
+foreground = "orange_bright"
+bold = true
+
+[ui.help_key]
+foreground = "cyan"
+bold = true
