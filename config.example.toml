@@ -1,0 +1,10 @@
+# IRIS configuration example.
+# Copy to ~/.config/iris/config.toml.
+
+theme = "ember"
+wrap = true
+tab_width = 4
+
+# "nerd-font" is the default and is intended for Nerd Font terminals.
+# Use "unicode" on terminals without Nerd Font glyphs.
+icons = "nerd-font"

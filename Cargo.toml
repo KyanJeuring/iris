@@ -1,0 +1,36 @@
+[package]
+name = "iris-reader"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.94"
+description = "A terminal-native viewer for documents, structured data, images, PDFs, databases, and stdin."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/KyanJeuring/iris"
+keywords = ["terminal", "markdown", "viewer", "tui", "reader"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "iris"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+dirs = "7"
+html-escape = "0.2"
+image = { version = "0.25.8", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
+open = "5"
+pulldown-cmark = "0.13.4"
+ratatui = "0.30.2"
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+resvg = "0.48.1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+toml = "1.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+ureq = "3.4"
+
