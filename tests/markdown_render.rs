@@ -121,3 +121,19 @@ fn promotes_markdown_images_from_paragraph_flow_to_image_blocks() {
     assert!(plain.contains("Before"));
     assert!(plain.contains("after"));
 }
+
+#[test]
+fn renders_custom_alert_title_instead_of_default_label() {
+    let rendered = render_source("> [!WARNING] Database unavailable\n> Body text\n", 80, None);
+
+    let plain = rendered
+        .lines
+        .iter()
+        .map(|line| line.plain.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(plain.contains("Database unavailable"));
+    assert!(plain.contains("Body text"));
+    assert!(!plain.contains("WARNING"));
+}

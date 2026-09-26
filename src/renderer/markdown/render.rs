@@ -77,7 +77,12 @@ impl Context<'_> {
                 self.render_inline_flow(*id, content, self.theme.document);
             }
             Block::Heading(heading) => self.render_heading(heading),
-            Block::BlockQuote { id, kind, blocks } => self.render_quote(*id, *kind, blocks),
+            Block::BlockQuote {
+                id,
+                kind,
+                title,
+                blocks,
+            } => self.render_quote(*id, *kind, title.as_deref(), blocks),
             Block::CodeBlock { id, language, code } => {
                 self.render_code(*id, language.as_deref(), code)
             }
@@ -177,6 +182,7 @@ impl Context<'_> {
         &mut self,
         id: NodeId,
         kind: Option<super::model::AlertKind>,
+        title: Option<&[Inline]>,
         blocks: &[Block],
     ) {
         let start = self.output.lines.len();
@@ -184,12 +190,22 @@ impl Context<'_> {
         self.width = self.width.saturating_sub(2).max(1);
 
         if let Some(kind) = kind {
-            let label = alert::label(kind, self.theme);
-            self.output.lines.push(RenderedLine {
-                line: Line::from(Span::styled(label.clone(), alert::style(kind, self.theme))),
-                plain: label,
-                source_id: Some(id),
-            });
+            let style = alert::style(kind, self.theme);
+            let pieces = if let Some(title) = title {
+                let mut pieces = vec![StyledPiece::new(
+                    format!("{} ", alert::icon(kind, self.theme)),
+                    style,
+                )];
+                pieces.extend(inline_pieces(title, style, self.theme, None));
+                pieces
+            } else {
+                vec![StyledPiece::new(alert::label(kind, self.theme), style)]
+            };
+
+            self.push_wrapped(
+                id,
+                wrap_pieces(&pieces, self.width, self.wrap, self.tab_width),
+            );
         }
         self.render_blocks(blocks);
         self.width = old_width;

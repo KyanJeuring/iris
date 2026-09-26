@@ -7,6 +7,8 @@ use pulldown_cmark::{
 use super::model::{AlertKind, Block, Document, Heading, Inline, ListItem, Table};
 use crate::renderer::NodeId;
 
+const ALERT_TITLE_SENTINEL: char = '\u{E000}';
+
 enum Frame {
     Root(Vec<Block>),
     Paragraph {
@@ -163,8 +165,9 @@ pub fn parse(source: &str) -> Document {
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
     let mut builder = Builder::new();
+    let marked_source = mark_custom_alert_titles(source);
 
-    for event in Parser::new_ext(source, options) {
+    for event in Parser::new_ext(&marked_source, options) {
         match event {
             Event::Start(tag) => start_tag(&mut builder, tag),
             Event::End(tag) => end_tag(&mut builder, tag),
@@ -323,8 +326,23 @@ fn end_tag(builder: &mut Builder, tag: TagEnd) {
             }
         }
         TagEnd::BlockQuote(_) => {
-            if let Some(Frame::BlockQuote { id, kind, blocks }) = builder.frames.pop() {
-                builder.push_block(Block::BlockQuote { id, kind, blocks });
+            if let Some(Frame::BlockQuote {
+                id,
+                kind,
+                mut blocks,
+            }) = builder.frames.pop()
+            {
+                let title = if kind.is_some() {
+                    extract_alert_title(&mut blocks)
+                } else {
+                    None
+                };
+                builder.push_block(Block::BlockQuote {
+                    id,
+                    kind,
+                    title,
+                    blocks,
+                });
             }
         }
         TagEnd::CodeBlock => {
@@ -479,6 +497,162 @@ fn heading_level(level: HeadingLevel) -> u8 {
     }
 }
 
+fn mark_custom_alert_titles(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut fence: Option<(char, usize)> = None;
+
+    for line in source.split_inclusive('\n') {
+        if let Some((fence_char, fence_len)) = fence {
+            if is_fence_line(line, fence_char, fence_len) {
+                fence = None;
+            }
+            output.push_str(line);
+            continue;
+        }
+
+        if let Some(opening_fence) = opening_fence(line) {
+            fence = Some(opening_fence);
+            output.push_str(line);
+            continue;
+        }
+
+        if let Some(rewritten) = rewrite_custom_alert_line(line) {
+            output.push_str(&rewritten);
+        } else {
+            output.push_str(line);
+        }
+    }
+
+    output
+}
+
+fn rewrite_custom_alert_line(line: &str) -> Option<String> {
+    let (leading, trimmed) = strip_markdown_indent(line)?;
+    let after_quote = trimmed.strip_prefix('>')?;
+    let after_quote_trimmed = after_quote.trim_start_matches([' ', '\t']);
+    let quote_spacing = after_quote.len() - after_quote_trimmed.len();
+
+    const MARKERS: [&str; 5] = [
+        "[!NOTE]",
+        "[!TIP]",
+        "[!IMPORTANT]",
+        "[!WARNING]",
+        "[!CAUTION]",
+    ];
+
+    let marker = MARKERS
+        .into_iter()
+        .find(|marker| after_quote_trimmed.starts_with(marker))?;
+
+    let rest = &after_quote_trimmed[marker.len()..];
+    let title = rest.trim_start_matches([' ', '\t']);
+    let title = title.trim_end_matches(['\r', '\n']);
+
+    if title.is_empty() {
+        return None;
+    }
+
+    let line_ending = if line.ends_with("\r\n") {
+        "\r\n"
+    } else if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+
+    let marker_end = leading + 1 + quote_spacing + marker.len();
+    let mut rewritten = String::with_capacity(line.len() + title.len() + leading + 4);
+
+    // GFM only recognizes an alert when the marker occupies the alert header
+    // line by itself. Rewrite a custom-title alert into a valid GFM alert plus
+    // a sentinel-prefixed quoted line that we extract as the title later.
+    rewritten.push_str(&line[..marker_end]);
+    if line_ending.is_empty() {
+        rewritten.push('\n');
+    } else {
+        rewritten.push_str(line_ending);
+    }
+
+    rewritten.push_str(&line[..leading]);
+    rewritten.push_str("> ");
+    rewritten.push(ALERT_TITLE_SENTINEL);
+    rewritten.push_str(title);
+    rewritten.push_str(line_ending);
+
+    Some(rewritten)
+}
+
+fn strip_markdown_indent(line: &str) -> Option<(usize, &str)> {
+    let leading = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading > 3 {
+        return None;
+    }
+    Some((leading, &line[leading..]))
+}
+
+fn opening_fence(line: &str) -> Option<(char, usize)> {
+    let (_, trimmed) = strip_markdown_indent(line)?;
+    let first = trimmed.chars().next()?;
+    if !matches!(first, '`' | '~') {
+        return None;
+    }
+
+    let len = trimmed.chars().take_while(|ch| *ch == first).count();
+    (len >= 3).then_some((first, len))
+}
+
+fn is_fence_line(line: &str, fence_char: char, fence_len: usize) -> bool {
+    let Some((_, trimmed)) = strip_markdown_indent(line) else {
+        return false;
+    };
+    let len = trimmed.chars().take_while(|ch| *ch == fence_char).count();
+    len >= fence_len
+}
+
+fn extract_alert_title(blocks: &mut Vec<Block>) -> Option<Vec<Inline>> {
+    let has_sentinel = matches!(
+        blocks.first(),
+        Some(Block::Paragraph { content, .. })
+            if content.first().is_some_and(inline_starts_with_alert_title_sentinel)
+    );
+
+    if !has_sentinel {
+        return None;
+    }
+
+    let Block::Paragraph { id, mut content } = blocks.remove(0) else {
+        return None;
+    };
+
+    strip_alert_title_sentinel(&mut content);
+
+    if let Some(index) = content
+        .iter()
+        .position(|inline| matches!(inline, Inline::SoftBreak | Inline::HardBreak))
+    {
+        let body = content.split_off(index + 1);
+        content.pop();
+
+        if !body.is_empty() {
+            blocks.insert(0, Block::Paragraph { id, content: body });
+        }
+    }
+
+    Some(content)
+}
+
+fn inline_starts_with_alert_title_sentinel(inline: &Inline) -> bool {
+    matches!(inline, Inline::Text(text) if text.starts_with(ALERT_TITLE_SENTINEL))
+}
+
+fn strip_alert_title_sentinel(content: &mut [Inline]) {
+    if let Some(Inline::Text(text)) = content.first_mut()
+        && let Some(rest) = text.strip_prefix(ALERT_TITLE_SENTINEL)
+    {
+        *text = rest.to_string();
+    }
+}
+
 fn alert_kind(kind: BlockQuoteKind) -> AlertKind {
     match kind {
         BlockQuoteKind::Note => AlertKind::Note,
@@ -564,6 +738,80 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn parses_custom_alert_title() {
+        let document = parse("> [!WARNING] Database unavailable\n> Body text\n");
+
+        let Some(Block::BlockQuote {
+            kind: Some(AlertKind::Warning),
+            title: Some(title),
+            blocks,
+            ..
+        }) = document.blocks.first()
+        else {
+            panic!("expected warning alert with custom title");
+        };
+
+        assert_eq!(Inline::plain_text(title), "Database unavailable");
+        assert!(matches!(
+            blocks.first(),
+            Some(Block::Paragraph { content, .. })
+                if Inline::plain_text(content) == "Body text"
+        ));
+    }
+
+    #[test]
+    fn keeps_default_alert_title_when_no_custom_title_is_present() {
+        let document = parse("> [!WARNING]\n> Body text\n");
+
+        let Some(Block::BlockQuote {
+            kind: Some(AlertKind::Warning),
+            title,
+            blocks,
+            ..
+        }) = document.blocks.first()
+        else {
+            panic!("expected warning alert");
+        };
+
+        assert!(title.is_none());
+        assert!(matches!(
+            blocks.first(),
+            Some(Block::Paragraph { content, .. })
+                if Inline::plain_text(content) == "Body text"
+        ));
+    }
+
+    #[test]
+    fn preserves_inline_formatting_in_custom_alert_title() {
+        let document = parse("> [!IMPORTANT] **Database** unavailable\n> Body text\n");
+
+        let Some(Block::BlockQuote {
+            title: Some(title), ..
+        }) = document.blocks.first()
+        else {
+            panic!("expected custom alert title");
+        };
+
+        assert_eq!(Inline::plain_text(title), "Database unavailable");
+        assert!(
+            title
+                .iter()
+                .any(|inline| matches!(inline, Inline::Strong(_)))
+        );
+    }
+
+    #[test]
+    fn does_not_treat_alert_examples_inside_code_fences_as_titles() {
+        let document = parse("```markdown\n> [!WARNING] Example title\n```\n");
+
+        let Some(Block::CodeBlock { code, .. }) = document.blocks.first() else {
+            panic!("expected fenced code block");
+        };
+
+        assert_eq!(code, "> [!WARNING] Example title");
     }
 
     #[test]
