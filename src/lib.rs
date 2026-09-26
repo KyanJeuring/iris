@@ -4,6 +4,7 @@ pub mod config;
 pub mod image;
 pub mod input;
 pub mod options;
+pub mod pdf;
 pub mod renderer;
 pub mod search;
 pub mod selection;
@@ -33,7 +34,7 @@ pub fn run() -> Result<()> {
     let config = Config::load()?.apply_cli(&cli);
     let theme = Theme::load(&config.theme, config.icons)?;
     let input = read_input(cli.input.as_deref(), cli.format)?;
-    let document = ViewDocument::from_input(&input);
+    let document = ViewDocument::from_input(&input)?;
     let mut app = App::new(
         input.name,
         input.kind,

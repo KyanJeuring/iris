@@ -121,9 +121,6 @@ pub fn standalone_image(content: &str) -> Option<StandaloneHtmlImage> {
                     continue;
                 }
 
-                // Common README wrappers around a single image should not stop IRIS from
-                // rendering the image itself. Presentation-only attributes such as `align`
-                // are intentionally ignored in the terminal.
                 if matches!(tag.name.as_str(), "p" | "div" | "center" | "figure") {
                     continue;
                 }

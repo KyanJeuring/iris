@@ -13,6 +13,7 @@ pub enum InputKind {
     Text,
     Markdown,
     Image,
+    Pdf,
 }
 
 impl InputKind {
@@ -21,6 +22,7 @@ impl InputKind {
             Self::Text => "Text",
             Self::Markdown => "Markdown",
             Self::Image => "Image",
+            Self::Pdf => "PDF",
         }
     }
 }
@@ -81,9 +83,9 @@ fn read_file(path: &Path, format: FormatArg) -> Result<Input> {
         .to_string();
 
     let data = match kind {
-        InputKind::Image => {
+        InputKind::Image | InputKind::Pdf => {
             let path = fs::canonicalize(path)
-                .with_context(|| format!("failed to resolve image path '{}'", path.display()))?;
+                .with_context(|| format!("failed to resolve input path '{}'", path.display()))?;
             InputData::File(path)
         }
         InputKind::Text | InputKind::Markdown => {
@@ -129,6 +131,10 @@ fn resolve_kind(path: Option<&Path>, bytes: &[u8], format: FormatArg) -> InputKi
 }
 
 fn detect_kind(path: &Path, bytes: &[u8]) -> InputKind {
+    if is_pdf_path(path) || looks_like_pdf_bytes(bytes) {
+        return InputKind::Pdf;
+    }
+
     if is_markdown_path(path) {
         return InputKind::Markdown;
     }
@@ -138,6 +144,18 @@ fn detect_kind(path: &Path, bytes: &[u8]) -> InputKind {
     }
 
     InputKind::Text
+}
+
+fn is_pdf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+fn looks_like_pdf_bytes(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|window| window == b"%PDF-")
 }
 
 fn is_markdown_path(path: &Path) -> bool {
@@ -194,6 +212,15 @@ mod tests {
         assert_eq!(
             detect_kind(&PathBuf::from("notes.txt"), b"plain text"),
             InputKind::Text
+        );
+    }
+
+    #[test]
+    fn detects_pdf_extension_and_signature() {
+        assert_eq!(detect_kind(Path::new("report.pdf"), b""), InputKind::Pdf);
+        assert_eq!(
+            detect_kind(Path::new("report"), b"%PDF-1.7\n"),
+            InputKind::Pdf
         );
     }
 

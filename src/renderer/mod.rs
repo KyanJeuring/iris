@@ -4,6 +4,7 @@ pub mod text;
 
 use std::path::Path;
 
+use anyhow::Result;
 use ratatui::{layout::Size, text::Line};
 
 use crate::{
@@ -95,11 +96,12 @@ pub enum ViewDocument {
     Text(text::TextDocument),
     Markdown(markdown::Document),
     Image(image::ImageDocument),
+    Pdf(Box<crate::pdf::PdfDocument>),
 }
 
 impl ViewDocument {
-    pub fn from_input(input: &Input) -> Self {
-        match input.kind {
+    pub fn from_input(input: &Input) -> Result<Self> {
+        Ok(match input.kind {
             InputKind::Text => Self::Text(text::TextDocument::new(
                 input.text().expect("text input should contain text"),
             )),
@@ -111,7 +113,12 @@ impl ViewDocument {
                     .file_path()
                     .expect("image input should contain a file path"),
             )),
-        }
+            InputKind::Pdf => Self::Pdf(Box::new(crate::pdf::PdfDocument::open(
+                input
+                    .file_path()
+                    .expect("PDF input should contain a file path"),
+            )?)),
+        })
     }
 
     pub fn render(
@@ -131,6 +138,7 @@ impl ViewDocument {
             Self::Image(document) => {
                 image::render(document, size.width, size.height, theme, images)
             }
+            Self::Pdf(_) => RenderedDocument::default(),
         }
     }
 
@@ -138,7 +146,7 @@ impl ViewDocument {
         match self {
             Self::Text(document) => document.search(matcher),
             Self::Markdown(document) => document.search(matcher),
-            Self::Image(_) => Vec::new(),
+            Self::Image(_) | Self::Pdf(_) => Vec::new(),
         }
     }
 
@@ -148,6 +156,10 @@ impl ViewDocument {
 
     pub fn is_image(&self) -> bool {
         matches!(self, Self::Image(_))
+    }
+
+    pub fn is_pdf(&self) -> bool {
+        matches!(self, Self::Pdf(_))
     }
 
     pub fn image_zoom_percent(&self) -> Option<u16> {

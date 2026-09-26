@@ -23,13 +23,17 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Padding, Paragraph, Widget},
 };
-use ratatui_image::Image as TerminalImage;
+use ratatui_image::{
+    Image as TerminalImage,
+    sliced::{SignedPosition, SlicedImage},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
     image::ImageManager,
     input::InputKind,
+    pdf::PdfLayoutMode,
     renderer::{NodeId, RenderedDocument, RenderedLine, ViewDocument},
     search::{SearchMatch, SearchMatcher, SearchState},
     selection::{DocumentPosition, Selection},
@@ -39,12 +43,6 @@ use crate::{
 
 const MOUSE_VERTICAL_SCROLL: usize = 3;
 const MOUSE_HORIZONTAL_SCROLL: usize = 4;
-
-#[derive(Debug, Clone, Copy)]
-enum PendingPrefix {
-    Previous,
-    Next,
-}
 
 pub struct App {
     name: String,
@@ -69,7 +67,9 @@ pub struct App {
     tab_width: usize,
 
     show_help: bool,
-    pending_prefix: Option<PendingPrefix>,
+    help_scroll: usize,
+    help_max_scroll: usize,
+    help_page_height: usize,
     recenter_image_after_render: bool,
 
     selection: Option<Selection>,
@@ -109,7 +109,9 @@ impl App {
             wrap,
             tab_width,
             show_help: false,
-            pending_prefix: None,
+            help_scroll: 0,
+            help_max_scroll: 0,
+            help_page_height: 1,
             recenter_image_after_render: false,
             selection: None,
             mouse_selection_anchor: None,
@@ -160,7 +162,11 @@ impl App {
         let [content_area, status_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-        let title = match self.document.image_zoom_percent() {
+        let zoom_percent = match &self.document {
+            ViewDocument::Pdf(document) => Some(document.zoom_percent()),
+            _ => self.document.image_zoom_percent(),
+        };
+        let title = match zoom_percent {
             Some(100) => format!(" {} [fit] ", self.name),
             Some(zoom) => format!(" {} [{zoom}%] ", self.name),
             None => format!(" {} ", self.name),
@@ -173,22 +179,49 @@ impl App {
         self.viewport_width = self.viewport_area.width.max(1);
         self.viewport_height = self.viewport_area.height.max(1);
 
-        self.ensure_rendered(self.viewport_width, self.viewport_height);
-        self.clamp_scroll();
+        if self.document.is_pdf() {
+            self.prepare_pdf_layout();
+            self.clamp_scroll();
 
-        let lines = self.display_lines();
-        let text = Text::from(lines);
-        let viewer = Paragraph::new(text)
-            .style(self.theme.document)
-            .block(block)
-            .scroll((
-                self.vertical_scroll.min(u16::MAX as usize) as u16,
-                self.horizontal_scroll.min(u16::MAX as usize) as u16,
-            ));
-        frame.render_widget(viewer, content_area);
-        self.draw_images(frame);
+            let viewer = Paragraph::new("").style(self.theme.document).block(block);
+            frame.render_widget(viewer, content_area);
+            self.draw_pdf_pages(frame);
+        } else {
+            self.ensure_rendered(self.viewport_width, self.viewport_height);
+            self.clamp_scroll();
 
-        let status_line = if self.search.active {
+            let lines = self.display_lines();
+            let text = Text::from(lines);
+            let viewer = Paragraph::new(text)
+                .style(self.theme.document)
+                .block(block)
+                .scroll((
+                    self.vertical_scroll.min(u16::MAX as usize) as u16,
+                    self.horizontal_scroll.min(u16::MAX as usize) as u16,
+                ));
+            frame.render_widget(viewer, content_area);
+            self.draw_images(frame);
+        }
+
+        let status_line = if self.document.is_pdf() {
+            let (pages, page_count, layout_mode, zoom_percent) = match &self.document {
+                ViewDocument::Pdf(document) => (
+                    document.row_pages_at_scroll(self.vertical_scroll),
+                    document.page_count(),
+                    document.layout_mode(),
+                    document.zoom_percent(),
+                ),
+                _ => unreachable!(),
+            };
+            ui::status::render_pdf(
+                &self.name,
+                &pages,
+                page_count,
+                layout_mode,
+                zoom_percent,
+                &self.theme,
+            )
+        } else if self.search.active {
             ui::search::prompt(&self.search, &self.theme)
         } else {
             let total = self.rendered.lines.len().max(1);
@@ -226,12 +259,31 @@ impl App {
         );
 
         if self.show_help {
-            ui::help::render(
+            let help = ui::help::render(
                 frame,
                 &self.theme,
                 self.document.is_markdown(),
                 self.document.is_image(),
+                self.document.is_pdf(),
+                self.help_scroll,
             );
+            self.help_scroll = help.scroll;
+            self.help_max_scroll = help.max_scroll;
+            self.help_page_height = help.page_height;
+
+            if (self.document.is_image() || self.document.is_pdf())
+                && let Some(sequence) = self.images.kitty_help_overlay_sequence(
+                    self.theme.help.bg,
+                    Size::new(help.area.width, help.area.height),
+                )
+            {
+                frame.render_widget(PreservingGraphicsCommand(sequence), help.area);
+            }
+        } else {
+            let sequence = self.images.hide_kitty_help_overlay_sequence();
+            if !sequence.is_empty() {
+                frame.render_widget(PreservingGraphicsCommand(sequence), frame.area());
+            }
         }
     }
 
@@ -240,6 +292,22 @@ impl App {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => self.show_help = false,
                 KeyCode::Char('q') => return true,
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_help_down(1),
+                KeyCode::Up | KeyCode::Char('k') => self.scroll_help_up(1),
+                KeyCode::PageDown => {
+                    self.scroll_help_down(self.help_page_height.saturating_sub(1).max(1));
+                }
+                KeyCode::PageUp => {
+                    self.scroll_help_up(self.help_page_height.saturating_sub(1).max(1));
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.scroll_help_down(self.help_page_height.saturating_div(2).max(1));
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.scroll_help_up(self.help_page_height.saturating_div(2).max(1));
+                }
+                KeyCode::Home | KeyCode::Char('g') => self.help_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.help_scroll = self.help_max_scroll,
                 _ => {}
             }
             return false;
@@ -247,11 +315,6 @@ impl App {
 
         if self.search.active {
             self.handle_search_key(key);
-            return false;
-        }
-
-        if let Some(prefix) = self.pending_prefix.take() {
-            self.handle_prefixed_key(prefix, key);
             return false;
         }
 
@@ -265,7 +328,10 @@ impl App {
                 self.clear_selection();
                 self.clear_search();
             }
-            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                self.help_scroll = 0;
+            }
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('n') => self.next_match(),
             KeyCode::Char('N') => self.previous_match(),
@@ -275,6 +341,10 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_up(self.half_page_height())
             }
+            KeyCode::Char('h') if self.document.is_markdown() => self.next_heading(),
+            KeyCode::Char('H') if self.document.is_markdown() => self.previous_heading(),
+            KeyCode::Char('p') if self.document.is_pdf() => self.next_pdf_page(),
+            KeyCode::Char('P') if self.document.is_pdf() => self.previous_pdf_page(),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_down(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(1),
             KeyCode::Right | KeyCode::Char('l') => self.scroll_right(1),
@@ -292,27 +362,31 @@ impl App {
             KeyCode::Char('0') if self.document.is_image() => {
                 self.reset_image_zoom();
             }
-            KeyCode::Char('w') => {
+            KeyCode::Char('+') | KeyCode::Char('=') if self.document.is_pdf() => {
+                self.zoom_pdf_in();
+            }
+            KeyCode::Char('-') if self.document.is_pdf() => {
+                self.zoom_pdf_out();
+            }
+            KeyCode::Char('0') if self.document.is_pdf() => {
+                self.reset_pdf_zoom();
+            }
+            KeyCode::Char('1') if self.document.is_pdf() => {
+                self.set_pdf_layout_mode(PdfLayoutMode::One);
+            }
+            KeyCode::Char('2') if self.document.is_pdf() => {
+                self.set_pdf_layout_mode(PdfLayoutMode::Two);
+            }
+            KeyCode::Char('a') if self.document.is_pdf() => {
+                self.set_pdf_layout_mode(PdfLayoutMode::Auto);
+            }
+            KeyCode::Char('w') if !self.document.is_image() && !self.document.is_pdf() => {
                 self.wrap = !self.wrap;
                 self.dirty = true;
-            }
-            KeyCode::Char('[') if self.document.is_markdown() => {
-                self.pending_prefix = Some(PendingPrefix::Previous)
-            }
-            KeyCode::Char(']') if self.document.is_markdown() => {
-                self.pending_prefix = Some(PendingPrefix::Next)
             }
             _ => {}
         }
         false
-    }
-
-    fn handle_prefixed_key(&mut self, prefix: PendingPrefix, key: KeyEvent) {
-        match (prefix, key.code) {
-            (PendingPrefix::Previous, KeyCode::Char('h')) => self.previous_heading(),
-            (PendingPrefix::Next, KeyCode::Char('h')) => self.next_heading(),
-            _ => {}
-        }
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) {
@@ -339,6 +413,11 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.show_help {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.scroll_help_up(MOUSE_VERTICAL_SCROLL),
+                MouseEventKind::ScrollDown => self.scroll_help_down(MOUSE_VERTICAL_SCROLL),
+                _ => {}
+            }
             return;
         }
 
@@ -350,7 +429,9 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll_down(MOUSE_VERTICAL_SCROLL),
             MouseEventKind::ScrollLeft => self.scroll_left(MOUSE_HORIZONTAL_SCROLL),
             MouseEventKind::ScrollRight => self.scroll_right(MOUSE_HORIZONTAL_SCROLL),
-            MouseEventKind::Down(MouseButton::Left) if !self.document.is_image() => {
+            MouseEventKind::Down(MouseButton::Left)
+                if !self.document.is_image() && !self.document.is_pdf() =>
+            {
                 self.start_mouse_selection(mouse.column, mouse.row);
             }
             MouseEventKind::Drag(MouseButton::Left) if self.mouse_selecting => {
@@ -359,7 +440,8 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) if self.mouse_selecting => {
                 self.finish_mouse_selection(mouse.column, mouse.row);
             }
-            MouseEventKind::Down(MouseButton::Left) if self.document.is_image() => {}
+            MouseEventKind::Down(MouseButton::Left)
+                if self.document.is_image() || self.document.is_pdf() => {}
             _ => {}
         }
     }
@@ -498,6 +580,10 @@ impl App {
     }
 
     fn open_search(&mut self) {
+        if self.document.is_image() || self.document.is_pdf() {
+            return;
+        }
+
         self.clear_selection();
         self.search.clear_query();
         self.search.open();
@@ -567,6 +653,228 @@ impl App {
         }
     }
 
+    fn next_pdf_page(&mut self) {
+        let target = match &self.document {
+            ViewDocument::Pdf(document) => document.next_row_top(self.vertical_scroll),
+            _ => None,
+        };
+        if let Some(top) = target {
+            self.vertical_scroll = top.min(self.max_vertical_scroll());
+            self.center_pdf_horizontally();
+        }
+    }
+
+    fn previous_pdf_page(&mut self) {
+        let target = match &self.document {
+            ViewDocument::Pdf(document) => document.previous_row_top(self.vertical_scroll),
+            _ => None,
+        };
+        if let Some(top) = target {
+            self.vertical_scroll = top.min(self.max_vertical_scroll());
+            self.center_pdf_horizontally();
+        }
+    }
+
+    fn center_pdf_horizontally(&mut self) {
+        self.horizontal_scroll = match &self.document {
+            ViewDocument::Pdf(document) => {
+                let page = document.page_at_scroll(self.vertical_scroll);
+                document.page_horizontal_scroll(page, self.viewport_width)
+            }
+            _ => 0,
+        };
+        self.horizontal_scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
+    }
+
+    fn set_pdf_layout_mode(&mut self, mode: PdfLayoutMode) {
+        if let ViewDocument::Pdf(document) = &mut self.document {
+            document.set_layout_mode(mode);
+        }
+    }
+
+    fn prepare_pdf_layout(&mut self) {
+        let viewport = Size::new(self.viewport_width.max(1), self.viewport_height.max(1));
+        let font_pixels = self.images.font_size_pixels();
+        let anchor = match &self.document {
+            ViewDocument::Pdf(document) => document.page_at_scroll(self.vertical_scroll),
+            _ => return,
+        };
+
+        let changed = match &mut self.document {
+            ViewDocument::Pdf(document) => document.rebuild_layout(viewport, font_pixels),
+            _ => false,
+        };
+
+        if changed {
+            let (top, left) = match &self.document {
+                ViewDocument::Pdf(document) => (
+                    document.page_top(anchor).unwrap_or(0),
+                    document.page_horizontal_scroll(anchor, viewport.width),
+                ),
+                _ => (0, 0),
+            };
+            self.vertical_scroll = top;
+            self.horizontal_scroll = left;
+            self.last_width = viewport.width;
+            self.last_height = viewport.height;
+            self.dirty = false;
+        }
+    }
+
+    fn draw_pdf_pages(&mut self, frame: &mut Frame) {
+        let viewport = self.viewport_area;
+        let scroll_left = self.horizontal_scroll;
+        let scroll_top = self.vertical_scroll;
+        let scroll_right = scroll_left.saturating_add(usize::from(viewport.width));
+        let scroll_bottom = scroll_top.saturating_add(usize::from(viewport.height));
+        let font_pixels = self.images.font_size_pixels();
+
+        let placements = match &self.document {
+            ViewDocument::Pdf(document) => document
+                .layout()
+                .placements
+                .iter()
+                .copied()
+                .filter(|placement| placement.intersects(scroll_top, scroll_bottom))
+                .collect::<Vec<_>>(),
+            _ => return,
+        };
+
+        // Kitty image placements persist independently from Ratatui's text buffer. Keep track of
+        // the PDF pages that are actually visible in both axes and explicitly delete placements
+        // that left the viewport or disappeared after a layout change. Without this, a page from
+        // a previous two-page spread can remain on screen after switching to one-page mode, and
+        // pages can overlap while scrolling through mixed portrait/landscape rows.
+        let visible_kitty_pages = placements
+            .iter()
+            .filter(|placement| {
+                let page_left = placement.x;
+                let page_right = page_left.saturating_add(usize::from(placement.width));
+                page_left < scroll_right && page_right > scroll_left
+            })
+            .map(|placement| format!("pdf-page:{}", placement.page_index))
+            .collect::<Vec<_>>();
+        let mut kitty_cleanup = self
+            .images
+            .sync_generated_kitty_placements(&visible_kitty_pages);
+
+        for placement in placements {
+            let page_left = placement.x;
+            let page_top = placement.y;
+            let page_right = page_left.saturating_add(usize::from(placement.width));
+            let page_bottom = page_top.saturating_add(usize::from(placement.height));
+            let visible_left = scroll_left.max(page_left);
+            let visible_top = scroll_top.max(page_top);
+            let visible_right = scroll_right.min(page_right);
+            let visible_bottom = scroll_bottom.min(page_bottom);
+
+            if visible_left >= visible_right || visible_top >= visible_bottom {
+                continue;
+            }
+
+            let size = Size::new(placement.width.max(1), placement.height.max(1));
+            let image = match &mut self.document {
+                ViewDocument::Pdf(document) => {
+                    document.render_page(placement.page_index, size, font_pixels)
+                }
+                _ => None,
+            };
+            let Some(image) = image else {
+                continue;
+            };
+
+            let crop_x = (visible_left - page_left).min(usize::from(u16::MAX)) as u16;
+            let crop_y = (visible_top - page_top).min(usize::from(u16::MAX)) as u16;
+            let screen_x = (visible_left - scroll_left).min(usize::from(u16::MAX)) as u16;
+            let screen_y = (visible_top - scroll_top).min(usize::from(u16::MAX)) as u16;
+            let visible_width = (visible_right - visible_left).min(usize::from(u16::MAX)) as u16;
+            let visible_height = (visible_bottom - visible_top).min(usize::from(u16::MAX)) as u16;
+            let visible_size = Size::new(visible_width.max(1), visible_height.max(1));
+            let area = Rect {
+                x: viewport.x.saturating_add(screen_x),
+                y: viewport.y.saturating_add(screen_y),
+                width: visible_size.width,
+                height: visible_size.height,
+            };
+
+            // PDFs are already rasterized at their final zoomed page size. Keep each page as its
+            // own native terminal image and only change the visible source rectangle while panning.
+            // On Kitty/Ghostty this means the full page is transmitted once per zoom level and
+            // horizontal/vertical panning never drops to the half-block fallback renderer.
+            let identity_key = format!("pdf-page:{}", placement.page_index);
+            let render_key = format!(
+                "pdf:{}:{}x{}:{}x{}",
+                placement.page_index,
+                size.width,
+                size.height,
+                font_pixels.width,
+                font_pixels.height
+            );
+
+            if let Some(mut sequence) = self.images.generated_kitty_viewport_sequence(
+                &identity_key,
+                &render_key,
+                image.as_ref(),
+                size,
+                Rect::new(crop_x, crop_y, visible_size.width, visible_size.height),
+            ) {
+                if !kitty_cleanup.is_empty() {
+                    let mut combined = std::mem::take(&mut kitty_cleanup);
+                    combined.push_str(&sequence);
+                    sequence = combined;
+                }
+                frame.render_widget(GraphicsCommand(sequence), area);
+                continue;
+            }
+
+            let horizontally_clipped = crop_x != 0 || visible_size.width < size.width;
+            if !horizontally_clipped {
+                let Some(protocol) =
+                    self.images
+                        .generated_sliced_protocol(render_key, image.as_ref(), size)
+                else {
+                    continue;
+                };
+
+                let relative_y = page_top as i128 - scroll_top as i128;
+                let y = relative_y.clamp(i16::MIN as i128, i16::MAX as i128) as i16;
+                let x = screen_x.min(i16::MAX as u16) as i16;
+                frame.render_widget(
+                    SlicedImage::new(protocol, SignedPosition::from((x, y))),
+                    viewport,
+                );
+                continue;
+            }
+
+            // Sixel/iTerm2 cannot cheaply skip arbitrary columns in a prepared SlicedProtocol.
+            // Crop the already high-resolution PDF raster to the visible source rectangle and
+            // encode that viewport with the terminal's preferred native protocol instead of
+            // silently switching to Unicode half-block rendering. The viewport protocol is cached
+            // so revisiting the same pan position does not require another encode.
+            let viewport_key = format!("{render_key}:viewport");
+            let Some(protocol) = self.images.generated_viewport_protocol(
+                viewport_key,
+                image.as_ref(),
+                size,
+                crop_x,
+                crop_y,
+                visible_size,
+            ) else {
+                continue;
+            };
+
+            frame.render_widget(TerminalImage::new(protocol), area);
+        }
+
+        // If no Kitty page was drawn this frame (for example because the viewport is currently in
+        // a gap between rows), we still need to emit pending delete commands so stale placements
+        // disappear immediately.
+        if !kitty_cleanup.is_empty() {
+            let cleanup_area = Rect::new(viewport.x, viewport.y, 1, 1);
+            frame.render_widget(GraphicsCommand(kitty_cleanup), cleanup_area);
+        }
+    }
+
     fn open_link_at(&mut self, column: u16, row: u16) {
         let area = self.viewport_area;
         if column < area.x
@@ -614,7 +922,6 @@ impl App {
 
         self.open_destination(&destination);
     }
-
     fn open_destination(&mut self, destination: &str) {
         if let Some(slug) = destination.strip_prefix('#') {
             if let Some(heading) = self
@@ -940,7 +1247,6 @@ impl App {
         let Some(selection) = self.selection.filter(|selection| !selection.is_empty()) else {
             return;
         };
-
         let text = selected_text(&self.rendered, selection);
         if text.is_empty() {
             return;
@@ -971,6 +1277,24 @@ impl App {
         }
     }
 
+    fn zoom_pdf_in(&mut self) {
+        if let ViewDocument::Pdf(document) = &mut self.document {
+            document.zoom_in();
+        }
+    }
+
+    fn zoom_pdf_out(&mut self) {
+        if let ViewDocument::Pdf(document) = &mut self.document {
+            document.zoom_out();
+        }
+    }
+
+    fn reset_pdf_zoom(&mut self) {
+        if let ViewDocument::Pdf(document) = &mut self.document {
+            document.reset_zoom();
+        }
+    }
+
     fn scroll_down(&mut self, amount: usize) {
         self.vertical_scroll = (self.vertical_scroll + amount).min(self.max_vertical_scroll());
     }
@@ -988,6 +1312,17 @@ impl App {
         self.horizontal_scroll = self.horizontal_scroll.saturating_sub(amount);
     }
 
+    fn scroll_help_down(&mut self, amount: usize) {
+        self.help_scroll = self
+            .help_scroll
+            .saturating_add(amount)
+            .min(self.help_max_scroll);
+    }
+
+    fn scroll_help_up(&mut self, amount: usize) {
+        self.help_scroll = self.help_scroll.saturating_sub(amount);
+    }
+
     fn half_page_height(&self) -> usize {
         usize::from(self.viewport_height).saturating_div(2).max(1)
     }
@@ -997,16 +1332,30 @@ impl App {
     }
 
     fn max_vertical_scroll(&self) -> usize {
-        self.rendered
-            .lines
-            .len()
-            .saturating_sub(self.viewport_height as usize)
+        match &self.document {
+            ViewDocument::Pdf(document) => document
+                .layout()
+                .total_height
+                .saturating_sub(usize::from(self.viewport_height)),
+            _ => self
+                .rendered
+                .lines
+                .len()
+                .saturating_sub(self.viewport_height as usize),
+        }
     }
 
     fn max_horizontal_scroll(&self) -> usize {
-        self.rendered
-            .max_width
-            .saturating_sub(self.viewport_width as usize)
+        match &self.document {
+            ViewDocument::Pdf(document) => document
+                .layout()
+                .total_width
+                .saturating_sub(usize::from(self.viewport_width)),
+            _ => self
+                .rendered
+                .max_width
+                .saturating_sub(self.viewport_width as usize),
+        }
     }
 
     fn clamp_scroll(&mut self) {
@@ -1257,6 +1606,26 @@ fn run_clipboard_command(program: &str, args: &[&str], text: &str) -> bool {
 }
 
 struct GraphicsCommand(String);
+
+struct PreservingGraphicsCommand(String);
+
+impl Widget for PreservingGraphicsCommand {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let Some(cell) = buf.cell_mut((area.x, area.y)) else {
+            return;
+        };
+
+        let visible_symbol = cell.symbol().to_string();
+        let mut symbol = self.0;
+        symbol.push_str(&visible_symbol);
+        cell.set_symbol(&symbol)
+            .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::MIN));
+    }
+}
 
 impl Widget for GraphicsCommand {
     fn render(self, area: Rect, buf: &mut Buffer) {

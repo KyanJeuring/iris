@@ -563,9 +563,6 @@ fn rewrite_custom_alert_line(line: &str) -> Option<String> {
     let marker_end = leading + 1 + quote_spacing + marker.len();
     let mut rewritten = String::with_capacity(line.len() + title.len() + leading + 4);
 
-    // GFM only recognizes an alert when the marker occupies the alert header
-    // line by itself. Rewrite a custom-title alert into a valid GFM alert plus
-    // a sentinel-prefixed quoted line that we extract as the title later.
     rewritten.push_str(&line[..marker_end]);
     if line_ending.is_empty() {
         rewritten.push('\n');

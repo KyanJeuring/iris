@@ -18,8 +18,14 @@ use ratatui_image::{
     Resize,
     picker::{Picker, ProtocolType},
     protocol::Protocol,
+    sliced::SlicedProtocol,
 };
 use resvg::{tiny_skia, usvg};
+
+// Native Kitty document graphics sit one layer below the temporary help background.
+// Both remain below terminal text, so help labels and borders stay crisp above the overlay.
+const KITTY_CONTENT_Z_INDEX: i32 = -2;
+const KITTY_HELP_Z_INDEX: i32 = -1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ImageSource {
@@ -37,6 +43,24 @@ struct CacheKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CellCacheKey {
     source: ImageSource,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GeneratedCellCacheKey {
+    key: String,
+    width: u16,
+    height: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GeneratedViewportCacheKey {
+    key: String,
+    canvas_width: u16,
+    canvas_height: u16,
+    offset_x: u16,
+    offset_y: u16,
     width: u16,
     height: u16,
 }
@@ -99,14 +123,33 @@ struct KittyFastImage {
     transmit: Option<String>,
 }
 
+#[derive(Debug)]
+struct GeneratedKittyFastImage {
+    render_key: String,
+    image: KittyFastImage,
+}
+
+#[derive(Debug)]
+struct KittyHelpOverlay {
+    color: Color,
+    image: KittyFastImage,
+}
+
 #[derive(Default)]
 pub struct ImageManager {
     picker: Option<Picker>,
     fallback_picker: Option<Picker>,
     decoded: HashMap<ImageSource, DynamicImage>,
     protocols: HashMap<CacheKey, Protocol>,
+    generated_protocols: HashMap<String, SlicedProtocol>,
+    generated_viewport_protocols: HashMap<GeneratedViewportCacheKey, Protocol>,
     cell_canvases: HashMap<CellCacheKey, CellCanvas>,
+    generated_cell_canvases: HashMap<GeneratedCellCacheKey, CellCanvas>,
     kitty_fast_images: HashMap<ImageSource, KittyFastImage>,
+    generated_kitty_fast_images: HashMap<String, GeneratedKittyFastImage>,
+    active_generated_kitty_placements: HashSet<String>,
+    kitty_help_overlay: Option<KittyHelpOverlay>,
+    kitty_help_overlay_active: bool,
     failed_sources: HashSet<ImageSource>,
 }
 
@@ -118,6 +161,328 @@ impl ImageManager {
         if self.fallback_picker.is_none() {
             self.fallback_picker = Some(Picker::halfblocks());
         }
+    }
+
+    pub fn font_size_pixels(&self) -> Size {
+        self.picker
+            .as_ref()
+            .map(|picker| {
+                let font = picker.font_size();
+                Size::new(font.width.max(1), font.height.max(1))
+            })
+            .unwrap_or(Size::new(10, 20))
+    }
+
+    pub fn generated_sliced_protocol(
+        &mut self,
+        key: String,
+        image: &DynamicImage,
+        size: Size,
+    ) -> Option<&SlicedProtocol> {
+        let size = Size::new(size.width.max(1), size.height.max(1));
+
+        if !self.generated_protocols.contains_key(&key) {
+            if self.generated_protocols.len() >= 12 {
+                self.generated_protocols.clear();
+            }
+
+            let preferred = self.picker.as_ref().and_then(|picker| {
+                SlicedProtocol::new_with_resize(picker, image.clone(), size, Resize::Fit(None)).ok()
+            });
+
+            let protocol = if let Some(protocol) = preferred {
+                protocol
+            } else {
+                SlicedProtocol::new_with_resize(
+                    self.fallback_picker.as_ref()?,
+                    image.clone(),
+                    size,
+                    Resize::Fit(None),
+                )
+                .ok()?
+            };
+
+            self.generated_protocols.insert(key.clone(), protocol);
+        }
+
+        self.generated_protocols.get(&key)
+    }
+
+    pub fn sync_generated_kitty_placements(&mut self, visible_identity_keys: &[String]) -> String {
+        let fast_kitty = self.picker.as_ref().is_some_and(|picker| {
+            picker.protocol_type() == ProtocolType::Kitty && !picker.tmux_detected()
+        });
+        if !fast_kitty {
+            self.active_generated_kitty_placements.clear();
+            return String::new();
+        }
+
+        let next = visible_identity_keys
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut stale = self
+            .active_generated_kitty_placements
+            .difference(&next)
+            .cloned()
+            .collect::<Vec<_>>();
+        stale.sort_unstable();
+
+        let mut sequence = String::new();
+        for identity_key in stale {
+            let id = kitty_generated_image_id(&identity_key);
+            sequence.push_str(&format!("\x1b_Ga=d,d=i,i={id},p=1,q=2\x1b\\"));
+        }
+
+        self.active_generated_kitty_placements = next;
+        sequence
+    }
+
+    pub fn generated_kitty_viewport_sequence(
+        &mut self,
+        identity_key: &str,
+        render_key: &str,
+        image: &DynamicImage,
+        canvas: Size,
+        viewport: Rect,
+    ) -> Option<String> {
+        let offset_x = viewport.x;
+        let offset_y = viewport.y;
+        let fast_kitty = self.picker.as_ref().is_some_and(|picker| {
+            picker.protocol_type() == ProtocolType::Kitty && !picker.tmux_detected()
+        });
+        if !fast_kitty {
+            return None;
+        }
+
+        let canvas = Size::new(canvas.width.max(1), canvas.height.max(1));
+        let visible = Size::new(
+            viewport
+                .width
+                .min(canvas.width.saturating_sub(offset_x))
+                .max(1),
+            viewport
+                .height
+                .min(canvas.height.saturating_sub(offset_y))
+                .max(1),
+        );
+
+        let needs_refresh = self
+            .generated_kitty_fast_images
+            .get(identity_key)
+            .is_none_or(|cached| cached.render_key != render_key);
+
+        if needs_refresh {
+            if self.generated_kitty_fast_images.len() >= 12
+                && !self.generated_kitty_fast_images.contains_key(identity_key)
+            {
+                self.generated_kitty_fast_images.clear();
+            }
+
+            let id = kitty_generated_image_id(identity_key);
+            let fast_image = build_kitty_fast_image_with_id(id, image)?;
+            self.generated_kitty_fast_images.insert(
+                identity_key.to_string(),
+                GeneratedKittyFastImage {
+                    render_key: render_key.to_string(),
+                    image: fast_image,
+                },
+            );
+        }
+
+        let cached = self.generated_kitty_fast_images.get_mut(identity_key)?;
+        let fast_image = &mut cached.image;
+        let (x, y, width, height) = source_rect_for_viewport(
+            fast_image.pixel_width,
+            fast_image.pixel_height,
+            canvas,
+            offset_x,
+            offset_y,
+            visible,
+        );
+
+        let mut sequence = fast_image.transmit.take().unwrap_or_default();
+        sequence.push_str(&format!(
+            "\x1b_Ga=p,i={},p=1,q=2,x={x},y={y},w={width},h={height},c={},r={},C=1,z={KITTY_CONTENT_Z_INDEX}\x1b\\",
+            fast_image.id, visible.width, visible.height
+        ));
+
+        Some(sequence)
+    }
+
+    pub fn kitty_help_overlay_sequence(
+        &mut self,
+        color: Option<Color>,
+        size: Size,
+    ) -> Option<String> {
+        let fast_kitty = self.picker.as_ref().is_some_and(|picker| {
+            picker.protocol_type() == ProtocolType::Kitty && !picker.tmux_detected()
+        });
+        if !fast_kitty {
+            self.kitty_help_overlay_active = false;
+            return None;
+        }
+
+        let color = color?;
+        let rgb = color_to_rgb(color)?;
+        let size = Size::new(size.width.max(1), size.height.max(1));
+        let font_pixels = self.font_size_pixels();
+        let pixel_width = u32::from(size.width)
+            .saturating_mul(u32::from(font_pixels.width.max(1)))
+            .max(1);
+        let pixel_height = u32::from(size.height)
+            .saturating_mul(u32::from(font_pixels.height.max(1)))
+            .max(1);
+
+        // Kitty preserves the source image's aspect ratio when an image is placed into a
+        // cell rectangle. A 1x1 solid image therefore gets letterboxed inside a rectangular
+        // help popup, leaving the document graphics visible around it. Build the overlay at
+        // the popup's actual pixel aspect ratio so the opaque color fills every help cell.
+        let needs_refresh = self.kitty_help_overlay.as_ref().is_none_or(|overlay| {
+            overlay.color != color
+                || overlay.image.pixel_width != pixel_width
+                || overlay.image.pixel_height != pixel_height
+        });
+
+        if needs_refresh {
+            let id = kitty_generated_image_id("iris-help-overlay");
+            let image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                pixel_width,
+                pixel_height,
+                ::image::Rgba([rgb.0, rgb.1, rgb.2, 255]),
+            ));
+            self.kitty_help_overlay = Some(KittyHelpOverlay {
+                color,
+                image: build_kitty_fast_image_with_id(id, &image)?,
+            });
+        }
+
+        let overlay = self.kitty_help_overlay.as_mut()?;
+        let mut sequence = overlay.image.transmit.take().unwrap_or_default();
+        sequence.push_str(&format!(
+            "\x1b_Ga=p,i={},p=1,q=2,c={},r={},C=1,z={KITTY_HELP_Z_INDEX}\x1b\\",
+            overlay.image.id,
+            size.width.max(1),
+            size.height.max(1)
+        ));
+        self.kitty_help_overlay_active = true;
+        Some(sequence)
+    }
+
+    pub fn hide_kitty_help_overlay_sequence(&mut self) -> String {
+        if !self.kitty_help_overlay_active {
+            return String::new();
+        }
+
+        self.kitty_help_overlay_active = false;
+        let Some(overlay) = &self.kitty_help_overlay else {
+            return String::new();
+        };
+
+        format!("\x1b_Ga=d,d=i,i={},p=1,q=2\x1b\\", overlay.image.id)
+    }
+
+    pub fn generated_viewport_protocol(
+        &mut self,
+        key: String,
+        image: &DynamicImage,
+        canvas: Size,
+        offset_x: u16,
+        offset_y: u16,
+        visible: Size,
+    ) -> Option<&Protocol> {
+        let canvas = Size::new(canvas.width.max(1), canvas.height.max(1));
+        if offset_x >= canvas.width || offset_y >= canvas.height {
+            return None;
+        }
+
+        let visible = Size::new(
+            visible
+                .width
+                .min(canvas.width.saturating_sub(offset_x))
+                .max(1),
+            visible
+                .height
+                .min(canvas.height.saturating_sub(offset_y))
+                .max(1),
+        );
+        let cache_key = GeneratedViewportCacheKey {
+            key,
+            canvas_width: canvas.width,
+            canvas_height: canvas.height,
+            offset_x,
+            offset_y,
+            width: visible.width,
+            height: visible.height,
+        };
+
+        if !self.generated_viewport_protocols.contains_key(&cache_key) {
+            if self.generated_viewport_protocols.len() >= 24 {
+                self.generated_viewport_protocols.clear();
+            }
+
+            let (x, y, width, height) = source_rect_for_viewport(
+                image.width(),
+                image.height(),
+                canvas,
+                offset_x,
+                offset_y,
+                visible,
+            );
+            let cropped = image.crop_imm(x, y, width, height);
+            let target = Size::new(visible.width.max(1), visible.height.max(1));
+
+            let preferred = self.picker.as_ref().and_then(|picker| {
+                picker
+                    .new_protocol(cropped.clone(), target, Resize::Fit(None))
+                    .ok()
+            });
+            let protocol = if let Some(protocol) = preferred {
+                protocol
+            } else {
+                self.fallback_picker
+                    .as_ref()?
+                    .new_protocol(cropped, target, Resize::Fit(None))
+                    .ok()?
+            };
+
+            self.generated_viewport_protocols
+                .insert(cache_key.clone(), protocol);
+        }
+
+        self.generated_viewport_protocols.get(&cache_key)
+    }
+
+    pub fn generated_cell_viewport(
+        &mut self,
+        key: String,
+        image: &DynamicImage,
+        canvas: Size,
+        offset_x: u16,
+        offset_y: u16,
+    ) -> Option<CellViewport<'_>> {
+        let canvas = Size::new(canvas.width.max(1), canvas.height.max(1));
+        let cache_key = GeneratedCellCacheKey {
+            key,
+            width: canvas.width,
+            height: canvas.height,
+        };
+
+        if !self.generated_cell_canvases.contains_key(&cache_key) {
+            if self.generated_cell_canvases.len() >= 8 {
+                self.generated_cell_canvases.clear();
+            }
+
+            self.generated_cell_canvases
+                .insert(cache_key.clone(), build_cell_canvas(image, canvas));
+        }
+
+        let cell_canvas = self.generated_cell_canvases.get(&cache_key)?;
+        Some(CellViewport {
+            canvas: cell_canvas,
+            offset_x: offset_x.min(canvas.width.saturating_sub(1)),
+            offset_y: offset_y.min(canvas.height.saturating_sub(1)),
+        })
     }
 
     pub fn layout_size(
@@ -240,7 +605,7 @@ impl ImageManager {
 
         let mut sequence = fast_image.transmit.take().unwrap_or_default();
         sequence.push_str(&format!(
-            "\x1b_Ga=p,i={},p=1,q=2,x={x},y={y},w={width},h={height},c={},r={},C=1,z=-1\x1b\\",
+            "\x1b_Ga=p,i={},p=1,q=2,x={x},y={y},w={width},h={height},c={},r={},C=1,z={KITTY_CONTENT_Z_INDEX}\x1b\\",
             fast_image.id, visible.width, visible.height
         ));
 
@@ -305,13 +670,38 @@ impl ImageManager {
     }
 }
 
+fn color_to_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Black => Some((0, 0, 0)),
+        Color::Red => Some((128, 0, 0)),
+        Color::Green => Some((0, 128, 0)),
+        Color::Yellow => Some((128, 128, 0)),
+        Color::Blue => Some((0, 0, 128)),
+        Color::Magenta => Some((128, 0, 128)),
+        Color::Cyan => Some((0, 128, 128)),
+        Color::Gray => Some((192, 192, 192)),
+        Color::DarkGray => Some((128, 128, 128)),
+        Color::LightRed => Some((255, 0, 0)),
+        Color::LightGreen => Some((0, 255, 0)),
+        Color::LightYellow => Some((255, 255, 0)),
+        Color::LightBlue => Some((0, 0, 255)),
+        Color::LightMagenta => Some((255, 0, 255)),
+        Color::LightCyan => Some((0, 255, 255)),
+        Color::White => Some((255, 255, 255)),
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(_) | Color::Reset => None,
+    }
+}
+
 fn build_kitty_fast_image(source: &ImageSource, image: &DynamicImage) -> Option<KittyFastImage> {
+    build_kitty_fast_image_with_id(kitty_image_id(source), image)
+}
+
+fn build_kitty_fast_image_with_id(id: u32, image: &DynamicImage) -> Option<KittyFastImage> {
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, ImageFormat::Png).ok()?;
 
     let encoded = STANDARD.encode(png.into_inner());
-    let id = kitty_image_id(source);
-
     Some(KittyFastImage {
         id,
         pixel_width: image.width().max(1),
@@ -324,6 +714,16 @@ fn kitty_image_id(source: &ImageSource) -> u32 {
     let mut hasher = DefaultHasher::new();
     std::process::id().hash(&mut hasher);
     source.hash(&mut hasher);
+
+    let id = hasher.finish() as u32;
+    if id == 0 { 1 } else { id }
+}
+
+fn kitty_generated_image_id(identity_key: &str) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    std::process::id().hash(&mut hasher);
+    "generated".hash(&mut hasher);
+    identity_key.hash(&mut hasher);
 
     let id = hasher.finish() as u32;
     if id == 0 { 1 } else { id }

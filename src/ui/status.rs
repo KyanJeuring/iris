@@ -1,6 +1,6 @@
 use ratatui::text::{Line, Span};
 
-use crate::theme::Theme;
+use crate::{pdf::PdfLayoutMode, theme::Theme};
 
 pub struct Status<'a> {
     pub name: &'a str,
@@ -57,8 +57,6 @@ pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
         spans.push(Span::styled("Fit ", theme.status));
         spans.push(Span::styled(" ? ", theme.status_accent));
         spans.push(Span::styled("Help ", theme.status));
-        spans.push(Span::styled(" q ", theme.status_accent));
-        spans.push(Span::styled("Quit ", theme.status));
     } else if status.selection {
         spans.push(Span::styled(" y/Ctrl+C ", theme.status_accent));
         spans.push(Span::styled("Copy ", theme.status));
@@ -70,4 +68,50 @@ pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
     }
 
     Line::from(spans)
+}
+
+pub fn render_pdf(
+    name: &str,
+    pages: &[usize],
+    page_count: usize,
+    layout_mode: PdfLayoutMode,
+    zoom_percent: u16,
+    theme: &Theme,
+) -> Line<'static> {
+    let page_label = match pages {
+        [] => format!(" Page 1/{} ", page_count.max(1)),
+        [page] => format!(" Page {}/{} ", page + 1, page_count.max(1)),
+        pages => {
+            let first = pages.first().copied().unwrap_or(0) + 1;
+            let last = pages.last().copied().unwrap_or(0) + 1;
+            format!(" Pages {first}-{last}/{} ", page_count.max(1))
+        }
+    };
+
+    Line::from(vec![
+        Span::styled(format!(" {name} "), theme.status_accent),
+        Span::styled(" PDF ", theme.status),
+        Span::styled(page_label, theme.status),
+        Span::styled(" Layout:", theme.status),
+        Span::styled(format!("{} ", layout_mode.label()), theme.status_accent),
+        Span::styled(" Zoom:", theme.status),
+        Span::styled(
+            if zoom_percent == 100 {
+                "fit ".to_string()
+            } else {
+                format!("{zoom_percent}% ")
+            },
+            theme.status_accent,
+        ),
+        Span::styled(" 1/2/a ", theme.status_accent),
+        Span::styled("Layout ", theme.status),
+        Span::styled(" +/- ", theme.status_accent),
+        Span::styled("Zoom ", theme.status),
+        Span::styled(" 0 ", theme.status_accent),
+        Span::styled("Fit ", theme.status),
+        Span::styled(" p/P ", theme.status_accent),
+        Span::styled("Next/Prev pages ", theme.status),
+        Span::styled(" ? ", theme.status_accent),
+        Span::styled("Help ", theme.status),
+    ])
 }
