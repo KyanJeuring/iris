@@ -15,6 +15,7 @@ name = "iris"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"

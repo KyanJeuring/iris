@@ -2,14 +2,25 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use crate::theme::Theme;
 
-pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool) {
-    let area = centered(frame.area(), 76, if markdown { 38 } else { 30 });
-    frame.render_widget(Clear, area);
+pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool, image: bool) {
+    let desired_height = if markdown {
+        38
+    } else if image {
+        36
+    } else {
+        30
+    };
+    let area = centered(frame.area(), 76, desired_height);
+
+    // Do not use `Clear` here. Native terminal image protocols live outside Ratatui's
+    // normal cell buffer, and clearing default cells can erase the rest of an image row.
+    // Painting an opaque styled background keeps the clear operation bounded to the popup.
+    frame.render_widget(Block::default().style(theme.help), area);
 
     let mut lines = Vec::new();
     section(&mut lines, "Navigation", theme);
@@ -31,6 +42,13 @@ pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool) {
         section(&mut lines, "Headings & links", theme);
         shortcut(&mut lines, "]h / [h", "Next / previous heading", theme);
         shortcut(&mut lines, "Left click", "Open a link or image", theme);
+    }
+
+    if image {
+        section(&mut lines, "Image", theme);
+        shortcut(&mut lines, "+ / =", "Zoom in", theme);
+        shortcut(&mut lines, "-", "Zoom out", theme);
+        shortcut(&mut lines, "0", "Reset zoom to fit", theme);
     }
 
     section(&mut lines, "Display & mouse", theme);

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
+    num::NonZeroU16,
     path::{Path, PathBuf},
 };
 
@@ -13,9 +14,10 @@ use crossterm::{
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Rect},
+    buffer::{Buffer, CellDiffOption},
+    layout::{Constraint, Layout, Rect, Size},
     text::{Line, Span, Text},
-    widgets::{Block, Padding, Paragraph},
+    widgets::{Block, Padding, Paragraph, Widget},
 };
 use ratatui_image::Image as TerminalImage;
 
@@ -49,6 +51,7 @@ pub struct App {
     rendered: RenderedDocument,
     dirty: bool,
     last_width: u16,
+    last_height: u16,
     viewport_area: Rect,
     viewport_width: u16,
     viewport_height: u16,
@@ -60,6 +63,7 @@ pub struct App {
 
     show_help: bool,
     pending_prefix: Option<PendingPrefix>,
+    recenter_image_after_render: bool,
 }
 
 impl App {
@@ -83,6 +87,7 @@ impl App {
             rendered: RenderedDocument::default(),
             dirty: true,
             last_width: 0,
+            last_height: 0,
             viewport_area: Rect::default(),
             viewport_width: 1,
             viewport_height: 1,
@@ -92,6 +97,7 @@ impl App {
             tab_width,
             show_help: false,
             pending_prefix: None,
+            recenter_image_after_render: false,
         }
     }
 
@@ -102,33 +108,46 @@ impl App {
         loop {
             terminal.draw(|frame| self.draw(frame))?;
 
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if self.handle_key(key) {
-                        break;
-                    }
-                }
-                Event::Mouse(mouse) => self.handle_mouse(mouse),
-                Event::Resize(_, _) => self.dirty = true,
-                _ => {}
+            if self.handle_event(event::read()?) {
+                break;
             }
         }
         Ok(())
+    }
+
+    fn handle_event(&mut self, event: Event) -> bool {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Event::Mouse(mouse) => {
+                self.handle_mouse(mouse);
+                false
+            }
+            Event::Resize(_, _) => {
+                self.dirty = true;
+                false
+            }
+            _ => false,
+        }
     }
 
     fn draw(&mut self, frame: &mut Frame) {
         let [content_area, status_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
+        let title = match self.document.image_zoom_percent() {
+            Some(100) => format!(" {} [fit] ", self.name),
+            Some(zoom) => format!(" {} [{zoom}%] ", self.name),
+            None => format!(" {} ", self.name),
+        };
         let block = Block::bordered()
-            .title(format!(" {} ", self.name))
+            .title(title)
             .border_style(self.theme.status_accent)
             .padding(Padding::uniform(1));
         self.viewport_area = block.inner(content_area);
         self.viewport_width = self.viewport_area.width.max(1);
         self.viewport_height = self.viewport_area.height.max(1);
 
-        self.ensure_rendered(self.viewport_width);
+        self.ensure_rendered(self.viewport_width, self.viewport_height);
         self.clamp_scroll();
 
         let lines = self.display_lines();
@@ -167,6 +186,7 @@ impl App {
                     percent,
                     wrap: self.wrap,
                     search: search_position,
+                    image: self.document.is_image(),
                 },
                 &self.theme,
             )
@@ -177,7 +197,12 @@ impl App {
         );
 
         if self.show_help {
-            ui::help::render(frame, &self.theme, self.document.is_markdown());
+            ui::help::render(
+                frame,
+                &self.theme,
+                self.document.is_markdown(),
+                self.document.is_image(),
+            );
         }
     }
 
@@ -208,26 +233,29 @@ impl App {
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('n') => self.next_match(),
             KeyCode::Char('N') => self.previous_match(),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_down(self.half_page_height())
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_up(self.half_page_height())
+            }
             KeyCode::Down | KeyCode::Char('j') => self.scroll_down(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(1),
             KeyCode::Right | KeyCode::Char('l') => self.scroll_right(1),
             KeyCode::Left | KeyCode::Char('h') => self.scroll_left(1),
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let amount = usize::from(self.viewport_area.height)
-                    .saturating_div(2)
-                    .max(1);
-                self.scroll_down(amount);
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let amount = usize::from(self.viewport_area.height)
-                    .saturating_div(2)
-                    .max(1);
-                self.scroll_up(amount);
-            }
             KeyCode::PageDown => self.scroll_down(self.page_height()),
             KeyCode::PageUp => self.scroll_up(self.page_height()),
             KeyCode::Home | KeyCode::Char('g') => self.vertical_scroll = 0,
             KeyCode::End | KeyCode::Char('G') => self.vertical_scroll = self.max_vertical_scroll(),
+            KeyCode::Char('+') | KeyCode::Char('=') if self.document.is_image() => {
+                self.zoom_image_in();
+            }
+            KeyCode::Char('-') if self.document.is_image() => {
+                self.zoom_image_out();
+            }
+            KeyCode::Char('0') if self.document.is_image() => {
+                self.reset_image_zoom();
+            }
             KeyCode::Char('w') => {
                 self.wrap = !self.wrap;
                 self.dirty = true;
@@ -375,20 +403,21 @@ impl App {
         let line = self.vertical_scroll + usize::from(row - area.y);
         let column = self.horizontal_scroll + usize::from(column - area.x);
 
-        if let Some(destination) = self
-            .rendered
-            .images
-            .iter()
-            .find(|image| {
-                let end_line = image.line + usize::from(image.height);
-                (image.line..end_line).contains(&line) && column >= image.column
-            })
-            .map(|image| {
-                image
-                    .destination
-                    .clone()
-                    .unwrap_or_else(|| image.source.clone())
-            })
+        if self.document.is_markdown()
+            && let Some(destination) = self
+                .rendered
+                .images
+                .iter()
+                .find(|image| {
+                    let end_line = image.line + usize::from(image.height);
+                    (image.line..end_line).contains(&line) && column >= image.column
+                })
+                .map(|image| {
+                    image
+                        .destination
+                        .clone()
+                        .unwrap_or_else(|| image.source.clone())
+                })
         {
             self.open_destination(&destination);
             return;
@@ -433,7 +462,16 @@ impl App {
     }
 
     fn draw_images(&mut self, frame: &mut Frame) {
-        if self.horizontal_scroll != 0 || self.rendered.images.is_empty() {
+        if self.rendered.images.is_empty() {
+            return;
+        }
+
+        if self.document.is_image() {
+            self.draw_standalone_image(frame);
+            return;
+        }
+
+        if self.horizontal_scroll != 0 {
             return;
         }
 
@@ -493,8 +531,86 @@ impl App {
         }
     }
 
-    fn ensure_rendered(&mut self, width: u16) {
-        if !self.dirty && self.last_width == width {
+    fn draw_standalone_image(&mut self, frame: &mut Frame) {
+        let Some(image) = self.rendered.images.first().cloned() else {
+            return;
+        };
+
+        let viewport = self.viewport_area;
+        let scroll_left = self.horizontal_scroll;
+        let scroll_top = self.vertical_scroll;
+        let scroll_right = scroll_left.saturating_add(usize::from(viewport.width));
+        let scroll_bottom = scroll_top.saturating_add(usize::from(viewport.height));
+        let image_left = image.column;
+        let image_top = image.line;
+        let image_right = image_left.saturating_add(usize::from(image.width));
+        let image_bottom = image_top.saturating_add(usize::from(image.height));
+
+        let visible_left = scroll_left.max(image_left);
+        let visible_top = scroll_top.max(image_top);
+        let visible_right = scroll_right.min(image_right);
+        let visible_bottom = scroll_bottom.min(image_bottom);
+
+        if visible_left >= visible_right || visible_top >= visible_bottom {
+            return;
+        }
+
+        let visible_width = (visible_right - visible_left).min(usize::from(u16::MAX)) as u16;
+        let visible_height = (visible_bottom - visible_top).min(usize::from(u16::MAX)) as u16;
+        let crop_x = (visible_left - image_left).min(usize::from(u16::MAX)) as u16;
+        let crop_y = (visible_top - image_top).min(usize::from(u16::MAX)) as u16;
+        let screen_x = (visible_left - scroll_left).min(usize::from(u16::MAX)) as u16;
+        let screen_y = (visible_top - scroll_top).min(usize::from(u16::MAX)) as u16;
+        let base_dir = self.base_dir.clone();
+
+        let area = Rect {
+            x: viewport.x.saturating_add(screen_x),
+            y: viewport.y.saturating_add(screen_y),
+            width: visible_width,
+            height: visible_height,
+        };
+
+        if let Some(sequence) = self.images.kitty_viewport_sequence(
+            &image.source,
+            base_dir.as_deref(),
+            Size::new(image.width, image.height),
+            crop_x,
+            crop_y,
+            Size::new(visible_width, visible_height),
+        ) {
+            frame.render_widget(GraphicsCommand(sequence), area);
+            return;
+        }
+
+        let pannable = image.width > viewport.width || image.height > viewport.height;
+
+        if pannable {
+            if let Some(viewport) = self.images.cell_viewport(
+                &image.source,
+                base_dir.as_deref(),
+                Size::new(image.width, image.height),
+                crop_x,
+                crop_y,
+            ) {
+                frame.render_widget(viewport, area);
+            }
+            return;
+        }
+
+        let Some(protocol) = self.images.protocol(
+            &image.source,
+            base_dir.as_deref(),
+            image.width,
+            image.height,
+        ) else {
+            return;
+        };
+
+        frame.render_widget(TerminalImage::new(protocol), area);
+    }
+
+    fn ensure_rendered(&mut self, width: u16, height: u16) {
+        if !self.dirty && self.last_width == width && self.last_height == height {
             return;
         }
 
@@ -505,7 +621,7 @@ impl App {
             .and_then(|line| line.source_id);
 
         self.rendered = self.document.render(
-            width,
+            Size::new(width, height),
             &self.theme,
             self.wrap,
             self.tab_width,
@@ -513,6 +629,7 @@ impl App {
             self.base_dir.as_deref(),
         );
         self.last_width = width;
+        self.last_height = height;
         self.dirty = false;
 
         if let Some(id) = anchor
@@ -523,6 +640,12 @@ impl App {
                 .position(|line| line.source_id == Some(id))
         {
             self.vertical_scroll = line;
+        }
+
+        if self.recenter_image_after_render {
+            self.vertical_scroll = self.max_vertical_scroll() / 2;
+            self.horizontal_scroll = self.max_horizontal_scroll() / 2;
+            self.recenter_image_after_render = false;
         }
 
         self.clamp_scroll();
@@ -611,6 +734,27 @@ impl App {
             .collect()
     }
 
+    fn zoom_image_in(&mut self) {
+        if self.document.zoom_image_in() {
+            self.dirty = true;
+            self.recenter_image_after_render = true;
+        }
+    }
+
+    fn zoom_image_out(&mut self) {
+        if self.document.zoom_image_out() {
+            self.dirty = true;
+            self.recenter_image_after_render = true;
+        }
+    }
+
+    fn reset_image_zoom(&mut self) {
+        if self.document.reset_image_zoom() {
+            self.dirty = true;
+            self.recenter_image_after_render = true;
+        }
+    }
+
     fn scroll_down(&mut self, amount: usize) {
         self.vertical_scroll = (self.vertical_scroll + amount).min(self.max_vertical_scroll());
     }
@@ -626,6 +770,10 @@ impl App {
 
     fn scroll_left(&mut self, amount: usize) {
         self.horizontal_scroll = self.horizontal_scroll.saturating_sub(amount);
+    }
+
+    fn half_page_height(&self) -> usize {
+        usize::from(self.viewport_height).saturating_div(2).max(1)
     }
 
     fn page_height(&self) -> usize {
@@ -728,6 +876,25 @@ fn highlight_line(
     let mut line = rendered.line.clone();
     line.spans = output;
     line
+}
+
+struct GraphicsCommand(String);
+
+impl Widget for GraphicsCommand {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let Some(cell) = buf.cell_mut((area.x, area.y)) else {
+            return;
+        };
+
+        let mut symbol = self.0;
+        symbol.push(' ');
+        cell.set_symbol(&symbol)
+            .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::MIN));
+    }
 }
 
 struct MouseCaptureGuard;

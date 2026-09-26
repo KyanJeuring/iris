@@ -345,6 +345,7 @@ impl Context<'_> {
             available_width.max(1),
             self.theme.image_max_height.max(1),
         );
+        let image_width = size.map(|size| size.width).unwrap_or(1).max(1);
         let height = size.map(|size| size.height).unwrap_or(1).max(1);
         let line = self.output.lines.len();
         let label = html::image_label(source, alt, self.theme);
@@ -368,6 +369,7 @@ impl Context<'_> {
             destination: destination.map(ToOwned::to_owned),
             line,
             column: 0,
+            width: image_width,
             height,
         });
         self.push_blank();

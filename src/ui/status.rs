@@ -10,6 +10,7 @@ pub struct Status<'a> {
     pub percent: usize,
     pub wrap: bool,
     pub search: Option<(usize, usize)>,
+    pub image: bool,
 }
 
 pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
@@ -25,15 +26,18 @@ pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
             ),
             theme.status,
         ),
-        Span::styled(
+    ];
+
+    if !status.image {
+        spans.push(Span::styled(
             if status.wrap {
                 " Wrap:on "
             } else {
                 " Wrap:off "
             },
             theme.status,
-        ),
-    ];
+        ));
+    }
 
     if let Some((current, total)) = status.search {
         spans.push(Span::styled(
@@ -42,6 +46,19 @@ pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
         ));
         spans.push(Span::styled(" n/N next/prev ", theme.status));
     }
-    spans.push(Span::styled(" ? Help ", theme.status_accent));
+
+    if status.image {
+        spans.push(Span::styled(" h/j/k/l ", theme.status_accent));
+        spans.push(Span::styled("Pan ", theme.status));
+        spans.push(Span::styled(" +/- ", theme.status_accent));
+        spans.push(Span::styled("Zoom ", theme.status));
+        spans.push(Span::styled(" 0 ", theme.status_accent));
+        spans.push(Span::styled("Fit ", theme.status));
+        spans.push(Span::styled(" ? ", theme.status_accent));
+        spans.push(Span::styled("Help ", theme.status));
+    } else {
+        spans.push(Span::styled(" ? Help ", theme.status_accent));
+    }
+
     Line::from(spans)
 }
