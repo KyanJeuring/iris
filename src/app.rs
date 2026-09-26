@@ -212,6 +212,18 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(1),
             KeyCode::Right | KeyCode::Char('l') => self.scroll_right(1),
             KeyCode::Left | KeyCode::Char('h') => self.scroll_left(1),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let amount = usize::from(self.viewport_area.height)
+                    .saturating_div(2)
+                    .max(1);
+                self.scroll_down(amount);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let amount = usize::from(self.viewport_area.height)
+                    .saturating_div(2)
+                    .max(1);
+                self.scroll_up(amount);
+            }
             KeyCode::PageDown => self.scroll_down(self.page_height()),
             KeyCode::PageUp => self.scroll_up(self.page_height()),
             KeyCode::Home | KeyCode::Char('g') => self.vertical_scroll = 0,

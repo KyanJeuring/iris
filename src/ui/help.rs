@@ -17,6 +17,7 @@ pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool) {
     shortcut(&mut lines, "k / ↑", "Scroll up", theme);
     shortcut(&mut lines, "h / ←", "Scroll left", theme);
     shortcut(&mut lines, "l / →", "Scroll right", theme);
+    shortcut(&mut lines, "Ctrl+D / Ctrl+U", "Half page down / up", theme);
     shortcut(&mut lines, "PgDn / PgUp", "Page down / up", theme);
     shortcut(&mut lines, "g / G", "Top / bottom", theme);
 
