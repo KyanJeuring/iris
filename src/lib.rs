@@ -6,6 +6,7 @@ pub mod input;
 pub mod options;
 pub mod renderer;
 pub mod search;
+pub mod selection;
 pub mod theme;
 pub mod ui;
 

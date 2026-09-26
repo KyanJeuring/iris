@@ -9,11 +9,11 @@ use crate::theme::Theme;
 
 pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool, image: bool) {
     let desired_height = if markdown {
-        38
+        43
     } else if image {
         36
     } else {
-        30
+        35
     };
     let area = centered(frame.area(), 76, desired_height);
 
@@ -42,6 +42,13 @@ pub fn render(frame: &mut Frame, theme: &Theme, markdown: bool, image: bool) {
         section(&mut lines, "Headings & links", theme);
         shortcut(&mut lines, "]h / [h", "Next / previous heading", theme);
         shortcut(&mut lines, "Left click", "Open a link or image", theme);
+    }
+
+    if !image {
+        section(&mut lines, "Selection", theme);
+        shortcut(&mut lines, "Mouse drag", "Select rendered text", theme);
+        shortcut(&mut lines, "y / Ctrl+C", "Copy selection", theme);
+        shortcut(&mut lines, "Esc", "Clear selection", theme);
     }
 
     if image {

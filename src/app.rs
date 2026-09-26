@@ -1,10 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
-    io,
+    io::{self, Write},
     num::NonZeroU16,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Duration,
 };
 
+use base64::Engine as _;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -16,16 +19,20 @@ use ratatui::{
     DefaultTerminal, Frame,
     buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Layout, Rect, Size},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Padding, Paragraph, Widget},
 };
 use ratatui_image::Image as TerminalImage;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     image::ImageManager,
     input::InputKind,
     renderer::{NodeId, RenderedDocument, RenderedLine, ViewDocument},
     search::{SearchMatch, SearchMatcher, SearchState},
+    selection::{DocumentPosition, Selection},
     theme::Theme,
     ui,
 };
@@ -64,6 +71,12 @@ pub struct App {
     show_help: bool,
     pending_prefix: Option<PendingPrefix>,
     recenter_image_after_render: bool,
+
+    selection: Option<Selection>,
+    mouse_selection_anchor: Option<(DocumentPosition, DocumentPosition)>,
+    mouse_selecting: bool,
+    mouse_dragged: bool,
+    mouse_drag_position: Option<(u16, u16)>,
 }
 
 impl App {
@@ -98,6 +111,11 @@ impl App {
             show_help: false,
             pending_prefix: None,
             recenter_image_after_render: false,
+            selection: None,
+            mouse_selection_anchor: None,
+            mouse_selecting: false,
+            mouse_dragged: false,
+            mouse_drag_position: None,
         }
     }
 
@@ -108,7 +126,15 @@ impl App {
         loop {
             terminal.draw(|frame| self.draw(frame))?;
 
-            if self.handle_event(event::read()?) {
+            if self.selection_needs_autoscroll() {
+                if event::poll(Duration::from_millis(35))? {
+                    if self.handle_event(event::read()?) {
+                        break;
+                    }
+                } else if let Some((column, row)) = self.mouse_drag_position {
+                    self.extend_mouse_selection(column, row);
+                }
+            } else if self.handle_event(event::read()?) {
                 break;
             }
         }
@@ -187,6 +213,9 @@ impl App {
                     wrap: self.wrap,
                     search: search_position,
                     image: self.document.is_image(),
+                    selection: self
+                        .selection
+                        .is_some_and(|selection| !selection.is_empty()),
                 },
                 &self.theme,
             )
@@ -228,7 +257,14 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => return true,
-            KeyCode::Esc => self.clear_search(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.copy_selection();
+            }
+            KeyCode::Char('y') => self.copy_selection(),
+            KeyCode::Esc => {
+                self.clear_selection();
+                self.clear_search();
+            }
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('n') => self.next_match(),
@@ -314,14 +350,155 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll_down(MOUSE_VERTICAL_SCROLL),
             MouseEventKind::ScrollLeft => self.scroll_left(MOUSE_HORIZONTAL_SCROLL),
             MouseEventKind::ScrollRight => self.scroll_right(MOUSE_HORIZONTAL_SCROLL),
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.open_link_at(mouse.column, mouse.row);
+            MouseEventKind::Down(MouseButton::Left) if !self.document.is_image() => {
+                self.start_mouse_selection(mouse.column, mouse.row);
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.mouse_selecting => {
+                self.extend_mouse_selection(mouse.column, mouse.row);
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.mouse_selecting => {
+                self.finish_mouse_selection(mouse.column, mouse.row);
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.document.is_image() => {}
             _ => {}
         }
     }
 
+    fn start_mouse_selection(&mut self, column: u16, row: u16) {
+        let Some((start, end)) = self.document_cell_bounds(column, row) else {
+            return;
+        };
+
+        self.mouse_selection_anchor = Some((start, end));
+        self.mouse_selecting = true;
+        self.mouse_dragged = false;
+        self.mouse_drag_position = Some((column, row));
+        self.selection = None;
+    }
+
+    fn extend_mouse_selection(&mut self, column: u16, row: u16) {
+        let Some((anchor_start, anchor_end)) = self.mouse_selection_anchor else {
+            return;
+        };
+
+        self.mouse_drag_position = Some((column, row));
+        self.autoscroll_selection(column, row);
+
+        let Some((head_start, head_end)) = self.document_cell_bounds_clamped(column, row) else {
+            return;
+        };
+
+        let selection = if head_start < anchor_start {
+            Selection::new(anchor_end, head_start)
+        } else {
+            Selection::new(anchor_start, head_end)
+        };
+
+        self.mouse_dragged = !selection.is_empty();
+        self.selection = (!selection.is_empty()).then_some(selection);
+    }
+
+    fn finish_mouse_selection(&mut self, column: u16, row: u16) {
+        if self.mouse_dragged {
+            self.extend_mouse_selection(column, row);
+        } else {
+            self.selection = None;
+            self.open_link_at(column, row);
+        }
+
+        self.mouse_selecting = false;
+        self.mouse_selection_anchor = None;
+        self.mouse_dragged = false;
+        self.mouse_drag_position = None;
+    }
+
+    fn autoscroll_selection(&mut self, column: u16, row: u16) {
+        let area = self.viewport_area;
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        if row < area.y {
+            self.scroll_up(1);
+        } else if row >= area.y.saturating_add(area.height) {
+            self.scroll_down(1);
+        }
+
+        if !self.wrap {
+            if column < area.x {
+                self.scroll_left(1);
+            } else if column >= area.x.saturating_add(area.width) {
+                self.scroll_right(1);
+            }
+        }
+    }
+
+    fn selection_needs_autoscroll(&self) -> bool {
+        let Some((column, row)) = self.mouse_drag_position else {
+            return false;
+        };
+        let area = self.viewport_area;
+        if area.width == 0 || area.height == 0 {
+            return false;
+        }
+
+        row < area.y
+            || row >= area.y.saturating_add(area.height)
+            || (!self.wrap && (column < area.x || column >= area.x.saturating_add(area.width)))
+    }
+
+    fn document_cell_bounds(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(DocumentPosition, DocumentPosition)> {
+        let area = self.viewport_area;
+        if column < area.x
+            || row < area.y
+            || column >= area.x.saturating_add(area.width)
+            || row >= area.y.saturating_add(area.height)
+        {
+            return None;
+        }
+
+        self.document_cell_bounds_clamped(column, row)
+    }
+
+    fn document_cell_bounds_clamped(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(DocumentPosition, DocumentPosition)> {
+        let area = self.viewport_area;
+        if area.width == 0 || area.height == 0 || self.rendered.lines.is_empty() {
+            return None;
+        }
+
+        let max_column = area.x.saturating_add(area.width).saturating_sub(1);
+        let max_row = area.y.saturating_add(area.height).saturating_sub(1);
+        let screen_column = column.clamp(area.x, max_column);
+        let screen_row = row.clamp(area.y, max_row);
+
+        let line_index = (self.vertical_scroll + usize::from(screen_row - area.y))
+            .min(self.rendered.lines.len().saturating_sub(1));
+        let display_column = self.horizontal_scroll + usize::from(screen_column - area.x);
+        let line = &self.rendered.lines[line_index].plain;
+        let (start, end) = grapheme_bounds_at_column(line, display_column);
+
+        Some((
+            DocumentPosition {
+                line: line_index,
+                byte: start,
+            },
+            DocumentPosition {
+                line: line_index,
+                byte: end,
+            },
+        ))
+    }
+
     fn open_search(&mut self) {
+        self.clear_selection();
         self.search.clear_query();
         self.search.open();
     }
@@ -620,6 +797,10 @@ impl App {
             .get(self.vertical_scroll)
             .and_then(|line| line.source_id);
 
+        if self.last_width != 0 || self.last_height != 0 {
+            self.clear_selection();
+        }
+
         self.rendered = self.document.render(
             Size::new(width, height),
             &self.theme,
@@ -680,58 +861,93 @@ impl App {
     }
 
     fn display_lines(&self) -> Vec<Line<'static>> {
-        let Some(matcher) = SearchMatcher::new(&self.search.query) else {
-            return self
-                .rendered
+        let mut lines = if let Some(matcher) = SearchMatcher::new(&self.search.query) {
+            let searchable_nodes = self
+                .search
+                .matches
+                .iter()
+                .map(|match_| match_.node_id)
+                .collect::<HashSet<_>>();
+            let current = self.search.current_match();
+            let mut occurrences = HashMap::<NodeId, usize>::new();
+
+            self.rendered
+                .lines
+                .iter()
+                .map(|line| {
+                    let Some(node_id) = line.source_id else {
+                        return line.line.clone();
+                    };
+                    if !searchable_nodes.contains(&node_id) {
+                        return line.line.clone();
+                    }
+                    let ranges = matcher.ranges(&line.plain);
+                    if ranges.is_empty() {
+                        return line.line.clone();
+                    }
+                    let start_occurrence = *occurrences.get(&node_id).unwrap_or(&0);
+                    occurrences.insert(node_id, start_occurrence + ranges.len());
+                    let styled_ranges = ranges
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (start, end))| {
+                            let occurrence = start_occurrence + index;
+                            let is_current = current.is_some_and(|match_| {
+                                match_.node_id == node_id && match_.occurrence == occurrence
+                            });
+                            (start, end, is_current)
+                        })
+                        .collect::<Vec<_>>();
+                    highlight_line(
+                        line,
+                        &styled_ranges,
+                        self.theme.search_match,
+                        self.theme.search_current,
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.rendered
                 .lines
                 .iter()
                 .map(|line| line.line.clone())
-                .collect();
+                .collect::<Vec<_>>()
         };
-        let searchable_nodes = self
-            .search
-            .matches
-            .iter()
-            .map(|match_| match_.node_id)
-            .collect::<HashSet<_>>();
-        let current = self.search.current_match();
-        let mut occurrences = HashMap::<NodeId, usize>::new();
 
-        self.rendered
-            .lines
-            .iter()
-            .map(|line| {
-                let Some(node_id) = line.source_id else {
-                    return line.line.clone();
+        if let Some(selection) = self.selection.filter(|selection| !selection.is_empty()) {
+            let selection_style = Style::default().add_modifier(Modifier::REVERSED);
+            for (index, line) in lines.iter_mut().enumerate() {
+                let plain = &self.rendered.lines[index].plain;
+                let Some((start, end)) = selection.range_for_line(index, plain.len()) else {
+                    continue;
                 };
-                if !searchable_nodes.contains(&node_id) {
-                    return line.line.clone();
-                }
-                let ranges = matcher.ranges(&line.plain);
-                if ranges.is_empty() {
-                    return line.line.clone();
-                }
-                let start_occurrence = *occurrences.get(&node_id).unwrap_or(&0);
-                occurrences.insert(node_id, start_occurrence + ranges.len());
-                let styled_ranges = ranges
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (start, end))| {
-                        let occurrence = start_occurrence + index;
-                        let is_current = current.is_some_and(|match_| {
-                            match_.node_id == node_id && match_.occurrence == occurrence
-                        });
-                        (start, end, is_current)
-                    })
-                    .collect::<Vec<_>>();
-                highlight_line(
-                    line,
-                    &styled_ranges,
-                    self.theme.search_match,
-                    self.theme.search_current,
-                )
-            })
-            .collect()
+                *line = patch_line_range(line, plain, start, end, selection_style);
+            }
+        }
+
+        lines
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.mouse_selection_anchor = None;
+        self.mouse_selecting = false;
+        self.mouse_dragged = false;
+        self.mouse_drag_position = None;
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(selection) = self.selection.filter(|selection| !selection.is_empty()) else {
+            return;
+        };
+
+        let text = selected_text(&self.rendered, selection);
+        if text.is_empty() {
+            return;
+        }
+
+        copy_to_clipboard(&text);
+        self.clear_selection();
     }
 
     fn zoom_image_in(&mut self) {
@@ -878,6 +1094,168 @@ fn highlight_line(
     line
 }
 
+fn grapheme_bounds_at_column(text: &str, target_column: usize) -> (usize, usize) {
+    let mut column = 0usize;
+
+    for (byte, grapheme) in text.grapheme_indices(true) {
+        let width = UnicodeWidthStr::width(grapheme).max(1);
+        let next_column = column.saturating_add(width);
+        if target_column < next_column {
+            return (byte, byte + grapheme.len());
+        }
+        column = next_column;
+    }
+
+    (text.len(), text.len())
+}
+
+fn patch_line_range(
+    line: &Line<'static>,
+    plain: &str,
+    start: usize,
+    end: usize,
+    patch: Style,
+) -> Line<'static> {
+    if start >= end || end > plain.len() {
+        return line.clone();
+    }
+
+    let span_len = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref().len())
+        .sum::<usize>();
+    if span_len != plain.len() {
+        return line.clone();
+    }
+
+    let mut output = Vec::<Span<'static>>::new();
+    let mut global_offset = 0usize;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let span_start = global_offset;
+        let span_end = span_start + text.len();
+        let mut cuts = vec![0usize, text.len()];
+
+        if start > span_start && start < span_end {
+            cuts.push(start - span_start);
+        }
+        if end > span_start && end < span_end {
+            cuts.push(end - span_start);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+
+        for pair in cuts.windows(2) {
+            let local_start = pair[0];
+            let local_end = pair[1];
+            if local_start == local_end
+                || !text.is_char_boundary(local_start)
+                || !text.is_char_boundary(local_end)
+            {
+                continue;
+            }
+
+            let global_start = span_start + local_start;
+            let global_end = span_start + local_end;
+            let style = if global_start < end && global_end > start {
+                span.style.patch(patch)
+            } else {
+                span.style
+            };
+            output.push(Span::styled(
+                text[local_start..local_end].to_string(),
+                style,
+            ));
+        }
+
+        global_offset = span_end;
+    }
+
+    let mut output_line = line.clone();
+    output_line.spans = output;
+    output_line
+}
+
+fn selected_text(rendered: &RenderedDocument, selection: Selection) -> String {
+    let (start, end) = selection.normalized();
+    if start == end || start.line >= rendered.lines.len() {
+        return String::new();
+    }
+
+    let end_line = end.line.min(rendered.lines.len().saturating_sub(1));
+    let mut output = String::new();
+
+    for line_index in start.line..=end_line {
+        let line = &rendered.lines[line_index].plain;
+        let from = if line_index == start.line {
+            start.byte.min(line.len())
+        } else {
+            0
+        };
+        let to = if line_index == end.line {
+            end.byte.min(line.len())
+        } else {
+            line.len()
+        };
+
+        if from <= to && line.is_char_boundary(from) && line.is_char_boundary(to) {
+            output.push_str(&line[from..to]);
+        }
+
+        if line_index < end_line {
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+fn copy_to_clipboard(text: &str) {
+    if copy_with_local_command(text) {
+        return;
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let mut stdout = io::stdout().lock();
+    let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
+    let _ = stdout.flush();
+}
+
+fn copy_with_local_command(text: &str) -> bool {
+    const COMMANDS: [(&str, &[&str]); 5] = [
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+        ("pbcopy", &[]),
+        ("clip.exe", &[]),
+    ];
+
+    COMMANDS
+        .iter()
+        .any(|(program, args)| run_clipboard_command(program, args, text))
+}
+
+fn run_clipboard_command(program: &str, args: &[&str], text: &str) -> bool {
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    let succeeded = child.wait().is_ok_and(|status| status.success());
+    wrote && succeeded
+}
+
 struct GraphicsCommand(String);
 
 impl Widget for GraphicsCommand {
@@ -909,5 +1287,47 @@ impl MouseCaptureGuard {
 impl Drop for MouseCaptureGuard {
     fn drop(&mut self) {
         let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn grapheme_bounds_follow_terminal_columns() {
+        let text = "a你🙂";
+
+        assert_eq!(grapheme_bounds_at_column(text, 0), (0, 1));
+        assert_eq!(grapheme_bounds_at_column(text, 1), (1, 4));
+        assert_eq!(grapheme_bounds_at_column(text, 2), (1, 4));
+        assert_eq!(grapheme_bounds_at_column(text, 3), (4, 8));
+        assert_eq!(grapheme_bounds_at_column(text, 4), (4, 8));
+        assert_eq!(grapheme_bounds_at_column(text, 5), (8, 8));
+    }
+
+    #[test]
+    fn copies_rendered_text_across_lines() {
+        let rendered = RenderedDocument {
+            lines: vec![
+                RenderedLine {
+                    line: Line::from("Hello, world"),
+                    plain: "Hello, world".to_string(),
+                    source_id: None,
+                },
+                RenderedLine {
+                    line: Line::from("Second line"),
+                    plain: "Second line".to_string(),
+                    source_id: None,
+                },
+            ],
+            ..RenderedDocument::default()
+        };
+        let selection = Selection::new(
+            DocumentPosition { line: 0, byte: 7 },
+            DocumentPosition { line: 1, byte: 6 },
+        );
+
+        assert_eq!(selected_text(&rendered, selection), "world\nSecond");
     }
 }

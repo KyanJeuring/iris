@@ -11,6 +11,7 @@ pub struct Status<'a> {
     pub wrap: bool,
     pub search: Option<(usize, usize)>,
     pub image: bool,
+    pub selection: bool,
 }
 
 pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
@@ -56,6 +57,14 @@ pub fn render(status: Status<'_>, theme: &Theme) -> Line<'static> {
         spans.push(Span::styled("Fit ", theme.status));
         spans.push(Span::styled(" ? ", theme.status_accent));
         spans.push(Span::styled("Help ", theme.status));
+        spans.push(Span::styled(" q ", theme.status_accent));
+        spans.push(Span::styled("Quit ", theme.status));
+    } else if status.selection {
+        spans.push(Span::styled(" y/Ctrl+C ", theme.status_accent));
+        spans.push(Span::styled("Copy ", theme.status));
+        spans.push(Span::styled(" Esc ", theme.status_accent));
+        spans.push(Span::styled("Clear ", theme.status));
+        spans.push(Span::styled(" ? Help ", theme.status_accent));
     } else {
         spans.push(Span::styled(" ? Help ", theme.status_accent));
     }
