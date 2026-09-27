@@ -66,11 +66,13 @@ jobs:
             runner: ubuntu-26.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
+            deb_arch: amd64
 
           - name: Linux ARM64
             runner: ubuntu-26.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-aarch64
+            deb_arch: arm64
 
           - name: macOS Intel
             runner: macos-26-intel
@@ -114,6 +116,43 @@ jobs:
           cd dist
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
+      - name: Package Debian archive
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_ROOT="dist/deb-root"
+          DEB_FILE="iris-reader_${VERSION}_${DEB_ARCH}.deb"
+
+          rm -rf "$PACKAGE_ROOT"
+          install -Dm755 \
+            "target/${{ matrix.target }}/release/iris" \
+            "$PACKAGE_ROOT/usr/bin/iris"
+          install -Dm644 LICENSE "$PACKAGE_ROOT/usr/share/doc/iris-reader/copyright"
+
+          mkdir -p "$PACKAGE_ROOT/DEBIAN"
+          cat > "$PACKAGE_ROOT/DEBIAN/control" <<EOF
+          Package: iris-reader
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: ${DEB_ARCH}
+          Maintainer: Kyan Jeuring <KyanJeuring@users.noreply.github.com>
+          Homepage: https://github.com/KyanJeuring/iris
+          Depends: libc6, libgcc-s1
+          Description: Terminal-native viewer for documents and data
+           IRIS is a terminal-native viewer for text, Markdown, images, PDFs,
+           structured data, and standard input.
+          EOF
+
+          dpkg-deb --build --root-owner-group "$PACKAGE_ROOT" "dist/$DEB_FILE"
+          rm -rf "$PACKAGE_ROOT"
+
+          cd dist
+          sha256sum "$DEB_FILE" > "$DEB_FILE.sha256"
+
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
@@ -154,7 +193,7 @@ jobs:
       - name: Create draft release
         uses: softprops/action-gh-release@v3
         with:
-          name: IRIS ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           draft: true
           body_path: .github/RELEASE_TEMPLATE.md
           fail_on_unmatched_files: true

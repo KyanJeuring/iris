@@ -2,10 +2,98 @@ use regex::{Regex, RegexBuilder};
 
 use crate::renderer::NodeId;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SearchRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl SearchRect {
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub fn right(self) -> f32 {
+        self.x + self.width
+    }
+
+    pub fn bottom(self) -> f32 {
+        self.y + self.height
+    }
+
+    pub fn center_x(self) -> f32 {
+        self.x + self.width / 2.0
+    }
+
+    pub fn center_y(self) -> f32 {
+        self.y + self.height / 2.0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Self::new(x, y, right - x, bottom - y)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchLocation {
+    Text {
+        node_id: NodeId,
+        occurrence: usize,
+    },
+    Pdf {
+        page_index: usize,
+        rects: Vec<SearchRect>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchMatch {
-    pub node_id: NodeId,
-    pub occurrence: usize,
+    pub location: SearchLocation,
+}
+
+impl SearchMatch {
+    pub fn text(node_id: NodeId, occurrence: usize) -> Self {
+        Self {
+            location: SearchLocation::Text {
+                node_id,
+                occurrence,
+            },
+        }
+    }
+
+    pub fn pdf(page_index: usize, rects: Vec<SearchRect>) -> Self {
+        Self {
+            location: SearchLocation::Pdf { page_index, rects },
+        }
+    }
+
+    pub fn text_location(&self) -> Option<(NodeId, usize)> {
+        match &self.location {
+            SearchLocation::Text {
+                node_id,
+                occurrence,
+            } => Some((*node_id, *occurrence)),
+            SearchLocation::Pdf { .. } => None,
+        }
+    }
+
+    pub fn pdf_location(&self) -> Option<(usize, &[SearchRect])> {
+        match &self.location {
+            SearchLocation::Pdf { page_index, rects } => Some((*page_index, rects)),
+            SearchLocation::Text { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +165,8 @@ impl SearchState {
 
 #[derive(Debug, Clone)]
 pub struct SearchMatcher {
+    query: String,
+    case_sensitive: bool,
     regex: Regex,
 }
 
@@ -91,7 +181,19 @@ impl SearchMatcher {
             .case_insensitive(!case_sensitive)
             .build()
             .expect("escaped search queries always compile");
-        Some(Self { regex })
+        Some(Self {
+            query: query.to_string(),
+            case_sensitive,
+            regex,
+        })
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
     }
 
     pub fn count(&self, text: &str) -> usize {
@@ -114,29 +216,32 @@ mod tests {
     fn search_uses_smart_case() {
         let matcher = SearchMatcher::new("markdown").unwrap();
         assert_eq!(matcher.count("Markdown markdown MARKDOWN"), 3);
+        assert!(!matcher.case_sensitive());
 
         let matcher = SearchMatcher::new("Markdown").unwrap();
         assert_eq!(matcher.count("Markdown markdown MARKDOWN"), 1);
+        assert!(matcher.case_sensitive());
     }
 
     #[test]
     fn navigation_wraps() {
         let mut state = SearchState::default();
-        state.set_matches(vec![
-            SearchMatch {
-                node_id: 1,
-                occurrence: 0,
-            },
-            SearchMatch {
-                node_id: 2,
-                occurrence: 0,
-            },
-        ]);
+        state.set_matches(vec![SearchMatch::text(1, 0), SearchMatch::text(2, 0)]);
         state.next();
         assert_eq!(state.current, Some(1));
         state.next();
         assert_eq!(state.current, Some(0));
         state.previous();
         assert_eq!(state.current, Some(1));
+    }
+
+    #[test]
+    fn rect_union_covers_both_rectangles() {
+        let union =
+            SearchRect::new(0.1, 0.2, 0.1, 0.1).union(SearchRect::new(0.18, 0.18, 0.2, 0.15));
+        assert!((union.x - 0.1).abs() < f32::EPSILON);
+        assert!((union.y - 0.18).abs() < f32::EPSILON);
+        assert!((union.right() - 0.38).abs() < f32::EPSILON);
+        assert!((union.bottom() - 0.33).abs() < f32::EPSILON);
     }
 }

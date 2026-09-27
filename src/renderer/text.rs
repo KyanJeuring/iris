@@ -35,10 +35,7 @@ impl TextDocument {
         let mut output = Vec::new();
         for line in &self.lines {
             for occurrence in 0..matcher.count(&line.content) {
-                output.push(SearchMatch {
-                    node_id: line.id,
-                    occurrence,
-                });
+                output.push(SearchMatch::text(line.id, occurrence));
             }
         }
         output

@@ -91,6 +91,7 @@ pub enum Block {
     BlockQuote {
         id: NodeId,
         kind: Option<AlertKind>,
+        title: Option<Vec<Inline>>,
         blocks: Vec<Block>,
     },
     CodeBlock {
@@ -149,7 +150,12 @@ fn search_blocks(blocks: &[Block], matcher: &SearchMatcher, matches: &mut Vec<Se
             Block::Html { id, content } => {
                 push_text_matches(*id, &super::html::plain_text(content), matcher, matches);
             }
-            Block::BlockQuote { blocks, .. } => {
+            Block::BlockQuote {
+                id, title, blocks, ..
+            } => {
+                if let Some(title) = title {
+                    push_text_matches(*id, &Inline::plain_text(title), matcher, matches);
+                }
                 search_blocks(blocks, matcher, matches);
             }
             Block::List { items, .. } => {
@@ -195,9 +201,6 @@ fn push_text_matches(
     output: &mut Vec<SearchMatch>,
 ) {
     for occurrence in 0..matcher.count(text) {
-        output.push(SearchMatch {
-            node_id,
-            occurrence,
-        });
+        output.push(SearchMatch::text(node_id, occurrence));
     }
 }
