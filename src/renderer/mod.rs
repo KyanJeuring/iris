@@ -142,11 +142,12 @@ impl ViewDocument {
         }
     }
 
-    pub fn search(&self, matcher: &SearchMatcher) -> Vec<SearchMatch> {
+    pub fn search(&mut self, matcher: &SearchMatcher) -> Vec<SearchMatch> {
         match self {
             Self::Text(document) => document.search(matcher),
             Self::Markdown(document) => document.search(matcher),
-            Self::Image(_) | Self::Pdf(_) => Vec::new(),
+            Self::Pdf(document) => document.search(matcher),
+            Self::Image(_) => Vec::new(),
         }
     }
 

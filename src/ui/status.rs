@@ -76,6 +76,7 @@ pub fn render_pdf(
     page_count: usize,
     layout_mode: PdfLayoutMode,
     zoom_percent: u16,
+    search: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
     let page_label = match pages {
@@ -88,7 +89,7 @@ pub fn render_pdf(
         }
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!(" {name} "), theme.status_accent),
         Span::styled(" PDF ", theme.status),
         Span::styled(page_label, theme.status),
@@ -103,6 +104,19 @@ pub fn render_pdf(
             },
             theme.status_accent,
         ),
+    ];
+
+    if let Some((current, total)) = search {
+        spans.push(Span::styled(
+            format!(" {current}/{total} matches "),
+            theme.status_accent,
+        ));
+        spans.push(Span::styled(" n/N next/prev ", theme.status));
+    }
+
+    spans.extend([
+        Span::styled(" / ", theme.status_accent),
+        Span::styled("Search ", theme.status),
         Span::styled(" 1/2/a ", theme.status_accent),
         Span::styled("Layout ", theme.status),
         Span::styled(" +/- ", theme.status_accent),
@@ -113,5 +127,7 @@ pub fn render_pdf(
         Span::styled("Next/Prev pages ", theme.status),
         Span::styled(" ? ", theme.status_accent),
         Span::styled("Help ", theme.status),
-    ])
+    ]);
+
+    Line::from(spans)
 }

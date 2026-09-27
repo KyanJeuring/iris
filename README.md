@@ -165,6 +165,8 @@ q                    Quit
 
 Mouse-wheel and trackpad scrolling are supported. Shift + wheel scrolls horizontally. Markdown links can be opened by clicking them.
 
+PDFs with an extractable text layer support the same `/` search and `n` / `N` navigation. Matching text is highlighted directly on the rendered pages, including invisible OCR text layers when the PDF provides one. Pure image-only scans without a text layer are not searchable yet.
+
 ## Markdown images and HTML
 
 Markdown images are rendered as terminal image blocks, including images placed inside normal paragraph flow. Standalone HTML `<img>` tags are rendered the same way. More complex inline HTML/image combinations fall back to a styled clickable placeholder so the surrounding text stays readable. IRIS detects terminal graphics capabilities and can use Kitty, Sixel, or iTerm2 image protocols, with a terminal-cell fallback when needed.

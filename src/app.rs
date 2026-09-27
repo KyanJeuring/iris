@@ -19,7 +19,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Layout, Rect, Size},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Padding, Paragraph, Widget},
 };
@@ -33,7 +33,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     image::ImageManager,
     input::InputKind,
-    pdf::PdfLayoutMode,
+    pdf::{PdfLayoutMode, PdfSearchHighlight, apply_search_highlights},
     renderer::{NodeId, RenderedDocument, RenderedLine, ViewDocument},
     search::{SearchMatch, SearchMatcher, SearchState},
     selection::{DocumentPosition, Selection},
@@ -203,7 +203,9 @@ impl App {
             self.draw_images(frame);
         }
 
-        let status_line = if self.document.is_pdf() {
+        let status_line = if self.search.active {
+            ui::search::prompt(&self.search, &self.theme)
+        } else if self.document.is_pdf() {
             let (pages, page_count, layout_mode, zoom_percent) = match &self.document {
                 ViewDocument::Pdf(document) => (
                     document.row_pages_at_scroll(self.vertical_scroll),
@@ -213,16 +215,24 @@ impl App {
                 ),
                 _ => unreachable!(),
             };
+            let search_position = if self.search.query.is_empty() {
+                None
+            } else {
+                Some(
+                    self.search
+                        .position_label()
+                        .unwrap_or((0, self.search.matches.len())),
+                )
+            };
             ui::status::render_pdf(
                 &self.name,
                 &pages,
                 page_count,
                 layout_mode,
                 zoom_percent,
+                search_position,
                 &self.theme,
             )
-        } else if self.search.active {
-            ui::search::prompt(&self.search, &self.theme)
         } else {
             let total = self.rendered.lines.len().max(1);
             let visible_end = (self.vertical_scroll + self.viewport_height as usize).min(total);
@@ -580,7 +590,7 @@ impl App {
     }
 
     fn open_search(&mut self) {
-        if self.document.is_image() || self.document.is_pdf() {
+        if self.document.is_image() {
             return;
         }
 
@@ -728,6 +738,8 @@ impl App {
         let scroll_right = scroll_left.saturating_add(usize::from(viewport.width));
         let scroll_bottom = scroll_top.saturating_add(usize::from(viewport.height));
         let font_pixels = self.images.font_size_pixels();
+        let search_match_color = style_background_rgb(self.theme.search_match, (91, 156, 246));
+        let search_current_color = style_background_rgb(self.theme.search_current, (255, 117, 0));
 
         let placements = match &self.document {
             ViewDocument::Pdf(document) => document
@@ -773,15 +785,27 @@ impl App {
             }
 
             let size = Size::new(placement.width.max(1), placement.height.max(1));
+            let highlights = self.pdf_search_highlights(placement.page_index);
             let image = match &mut self.document {
                 ViewDocument::Pdf(document) => {
                     document.render_page(placement.page_index, size, font_pixels)
                 }
                 _ => None,
             };
-            let Some(image) = image else {
+            let Some(base_image) = image else {
                 continue;
             };
+            let highlighted_image = (!highlights.is_empty()).then(|| {
+                apply_search_highlights(
+                    base_image.as_ref(),
+                    &highlights,
+                    search_match_color,
+                    search_current_color,
+                )
+            });
+            let image = highlighted_image
+                .as_ref()
+                .unwrap_or_else(|| base_image.as_ref());
 
             let crop_x = (visible_left - page_left).min(usize::from(u16::MAX)) as u16;
             let crop_y = (visible_top - page_top).min(usize::from(u16::MAX)) as u16;
@@ -802,19 +826,29 @@ impl App {
             // On Kitty/Ghostty this means the full page is transmitted once per zoom level and
             // horizontal/vertical panning never drops to the half-block fallback renderer.
             let identity_key = format!("pdf-page:{}", placement.page_index);
+            let search_key = if highlights.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ":search:{}:{}",
+                    self.search.query,
+                    self.search.current.unwrap_or(usize::MAX)
+                )
+            };
             let render_key = format!(
-                "pdf:{}:{}x{}:{}x{}",
+                "pdf:{}:{}x{}:{}x{}{}",
                 placement.page_index,
                 size.width,
                 size.height,
                 font_pixels.width,
-                font_pixels.height
+                font_pixels.height,
+                search_key
             );
 
             if let Some(mut sequence) = self.images.generated_kitty_viewport_sequence(
                 &identity_key,
                 &render_key,
-                image.as_ref(),
+                image,
                 size,
                 Rect::new(crop_x, crop_y, visible_size.width, visible_size.height),
             ) {
@@ -829,9 +863,9 @@ impl App {
 
             let horizontally_clipped = crop_x != 0 || visible_size.width < size.width;
             if !horizontally_clipped {
-                let Some(protocol) =
-                    self.images
-                        .generated_sliced_protocol(render_key, image.as_ref(), size)
+                let Some(protocol) = self
+                    .images
+                    .generated_sliced_protocol(render_key, image, size)
                 else {
                     continue;
                 };
@@ -854,7 +888,7 @@ impl App {
             let viewport_key = format!("{render_key}:viewport");
             let Some(protocol) = self.images.generated_viewport_protocol(
                 viewport_key,
-                image.as_ref(),
+                image,
                 size,
                 crop_x,
                 crop_y,
@@ -873,6 +907,27 @@ impl App {
             let cleanup_area = Rect::new(viewport.x, viewport.y, 1, 1);
             frame.render_widget(GraphicsCommand(kitty_cleanup), cleanup_area);
         }
+    }
+
+    fn pdf_search_highlights(&self, page_index: usize) -> Vec<PdfSearchHighlight> {
+        if self.search.query.is_empty() {
+            return Vec::new();
+        }
+
+        let mut highlights = Vec::new();
+        for (match_index, search_match) in self.search.matches.iter().enumerate() {
+            let Some((match_page, rects)) = search_match.pdf_location() else {
+                continue;
+            };
+            if match_page != page_index {
+                continue;
+            }
+            highlights.extend(rects.iter().copied().map(|rect| PdfSearchHighlight {
+                rect,
+                current: self.search.current == Some(match_index),
+            }));
+        }
+        highlights
     }
 
     fn open_link_at(&mut self, column: u16, row: u16) {
@@ -1140,6 +1195,22 @@ impl App {
     }
 
     fn focus_search_target(&mut self, target: &SearchMatch) {
+        if let Some((page_index, rects)) = target.pdf_location() {
+            let rect = rects.first().copied();
+            let viewport = Size::new(self.viewport_width.max(1), self.viewport_height.max(1));
+            if let ViewDocument::Pdf(document) = &self.document
+                && let Some((top, left)) =
+                    document.search_scroll_position(page_index, rect, viewport)
+            {
+                self.vertical_scroll = top;
+                self.horizontal_scroll = left;
+            }
+            return;
+        }
+
+        let Some((target_node_id, target_occurrence)) = target.text_location() else {
+            return;
+        };
         let Some(matcher) = SearchMatcher::new(&self.search.query) else {
             return;
         };
@@ -1147,12 +1218,12 @@ impl App {
         let mut fallback = None;
 
         for (index, line) in self.rendered.lines.iter().enumerate() {
-            if line.source_id != Some(target.node_id) {
+            if line.source_id != Some(target_node_id) {
                 continue;
             }
             fallback.get_or_insert(index);
             for _ in matcher.ranges(&line.plain) {
-                if occurrence == target.occurrence {
+                if occurrence == target_occurrence {
                     self.vertical_scroll = index.saturating_sub(self.viewport_height as usize / 4);
                     self.horizontal_scroll = 0;
                     return;
@@ -1173,9 +1244,13 @@ impl App {
                 .search
                 .matches
                 .iter()
-                .map(|match_| match_.node_id)
+                .filter_map(SearchMatch::text_location)
+                .map(|(node_id, _)| node_id)
                 .collect::<HashSet<_>>();
-            let current = self.search.current_match();
+            let current = self
+                .search
+                .current_match()
+                .and_then(SearchMatch::text_location);
             let mut occurrences = HashMap::<NodeId, usize>::new();
 
             self.rendered
@@ -1199,9 +1274,10 @@ impl App {
                         .enumerate()
                         .map(|(index, (start, end))| {
                             let occurrence = start_occurrence + index;
-                            let is_current = current.is_some_and(|match_| {
-                                match_.node_id == node_id && match_.occurrence == occurrence
-                            });
+                            let is_current =
+                                current.is_some_and(|(current_node, current_occurrence)| {
+                                    current_node == node_id && current_occurrence == occurrence
+                                });
                             (start, end, is_current)
                         })
                         .collect::<Vec<_>>();
@@ -1361,6 +1437,29 @@ impl App {
     fn clamp_scroll(&mut self) {
         self.vertical_scroll = self.vertical_scroll.min(self.max_vertical_scroll());
         self.horizontal_scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
+    }
+}
+
+fn style_background_rgb(style: Style, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
+    match style.bg {
+        Some(Color::Rgb(red, green, blue)) => (red, green, blue),
+        Some(Color::Black) => (0, 0, 0),
+        Some(Color::Red) => (255, 0, 0),
+        Some(Color::Green) => (0, 255, 0),
+        Some(Color::Yellow) => (255, 255, 0),
+        Some(Color::Blue) => (0, 0, 255),
+        Some(Color::Magenta) => (255, 0, 255),
+        Some(Color::Cyan) => (0, 255, 255),
+        Some(Color::Gray) => (128, 128, 128),
+        Some(Color::DarkGray) => (64, 64, 64),
+        Some(Color::LightRed) => (255, 128, 128),
+        Some(Color::LightGreen) => (128, 255, 128),
+        Some(Color::LightYellow) => (255, 255, 128),
+        Some(Color::LightBlue) => (128, 128, 255),
+        Some(Color::LightMagenta) => (255, 128, 255),
+        Some(Color::LightCyan) => (128, 255, 255),
+        Some(Color::White) => (255, 255, 255),
+        _ => fallback,
     }
 }
 

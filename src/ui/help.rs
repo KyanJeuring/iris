@@ -99,7 +99,9 @@ fn help_lines(theme: &Theme, markdown: bool, image: bool, pdf: bool) -> Vec<Line
             "Reflow automatic layout to fit",
             theme,
         );
-    } else if !image {
+    }
+
+    if !image {
         section(&mut lines, "Search", theme);
         shortcut(&mut lines, "/", "Search", theme);
         shortcut(&mut lines, "n / N", "Next / previous match", theme);

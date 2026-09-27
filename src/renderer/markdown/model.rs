@@ -201,9 +201,6 @@ fn push_text_matches(
     output: &mut Vec<SearchMatch>,
 ) {
     for occurrence in 0..matcher.count(text) {
-        output.push(SearchMatch {
-            node_id,
-            occurrence,
-        });
+        output.push(SearchMatch::text(node_id, occurrence));
     }
 }
