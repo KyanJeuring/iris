@@ -2,34 +2,84 @@
 
 ### Terminal-native viewing for documents, data, and everything in between
 
-IRIS is a general-purpose terminal viewer for rendering and exploring different kinds of files and structured data from one interface.
+IRIS is a general-purpose terminal viewer for rendering and exploring files from a single interface.
 
-Instead of switching between separate tools for Markdown, JSON, CSV files, logs, images, PDFs, databases, and other formats, IRIS aims to provide a single terminal-native way to inspect them.
+Instead of switching between separate tools for text, Markdown, images, PDFs, structured data, and other formats, IRIS aims to provide one consistent terminal-native workflow for inspecting information.
 
 Think of it as a more visual and extensible `less` for modern files and data.
 
-## What can IRIS view?
+## Supported content
 
-IRIS is designed to support formats such as:
+IRIS currently supports:
 
-* Markdown
-* JSON
-* YAML
-* TOML
-* CSV
-* Images
-* PDFs
-* SQLite databases
-* Logs and plain text
-* Standard input
+- Plain text and logs
+- Standard input
+- Markdown
+- Images: PNG, JPEG, GIF, WebP, BMP, ICO, and SVG
+- PDF documents
 
-The current release focuses on plain text and Markdown. Markdown rendering includes headings, lists and task lists, tables, blockquotes and GitHub-style alerts, syntax-highlighted code blocks, links, embedded HTML, and Markdown images. Additional format-specific renderers will be added incrementally.
+IRIS detects supported file types automatically from their extension and, where possible, their contents.
+
+The project is designed to grow beyond these formats into structured data such as JSON, YAML, TOML, CSV, and SQLite while keeping the same terminal-native interface.
+
+## Features
+
+### Text and standard input
+
+Plain text can be opened directly or piped into IRIS. Long lines can be wrapped to the terminal width or viewed using horizontal scrolling.
+
+IRIS supports mouse text selection, copying selected text, searching, mouse-wheel and trackpad scrolling, and Vim-style keyboard navigation.
+
+### Markdown
+
+Markdown is rendered as a structured terminal document rather than displayed as raw source. Supported elements include:
+
+- Headings
+- Ordered and unordered lists
+- Task lists
+- Tables
+- Blockquotes
+- GitHub-style alerts, including custom alert titles
+- Fenced code blocks with syntax highlighting
+- Inline code
+- Emphasis, strong text, and strikethrough
+- Links
+- Horizontal rules
+- Markdown images
+- Embedded HTML for common document elements
+
+Markdown headings can be navigated directly, and links or images can be opened with the mouse.
+
+### Images
+
+IRIS can open raster images and SVG files directly. Images are fitted to the available terminal area and can be zoomed and panned interactively.
+
+SVG files are rasterized automatically before display. IRIS detects terminal graphics capabilities and can use Kitty, Sixel, or iTerm2 image protocols, with a terminal-cell fallback when native graphics are unavailable.
+
+The same graphics support is used for images embedded in Markdown documents.
+
+### PDFs
+
+PDF documents are rendered directly inside the terminal with support for mixed page sizes and orientations.
+
+The PDF viewer provides:
+
+- Automatic, one-page, and two-page layouts
+- Landscape-aware page placement
+- Zooming and panning
+- Page-row navigation
+- Mouse-wheel and trackpad scrolling
+- Search across extractable PDF text
+- Match highlighting directly on rendered pages
+- Next and previous result navigation
+
+PDF search uses the document's text layer, including invisible OCR text when the PDF already contains one. Pure image-only scans without a text layer are not searchable unless OCR has been applied to the document beforehand.
 
 ## Installation
 
 ### Cargo
 
-Install the latest published release from crates.io:
+Install IRIS from crates.io:
 
 ```bash
 cargo install iris-reader --locked
@@ -113,8 +163,6 @@ For a source installation, the same can be done through the Makefile:
 make uninstall
 ```
 
-Support for additional package managers such as APT, Pacman/AUR, Homebrew, and WinGet is planned.
-
 ## Usage
 
 Open a file directly:
@@ -122,61 +170,131 @@ Open a file directly:
 ```bash
 iris README.md
 iris notes.txt
+iris image.png
+iris document.pdf
 ```
 
-Or read standard input:
+Read from standard input:
 
 ```bash
 journalctl | iris
 cat README.md | iris --format markdown
 ```
 
-IRIS detects Markdown from file extensions. For piped input, use `--format markdown` when Markdown rendering is desired.
+IRIS detects supported file types automatically. Standard input is treated as plain text by default; use `--format markdown` when piped input should be rendered as Markdown.
 
-Useful options include:
+Useful command-line options include:
 
 ```bash
 iris --help
 iris --version
+iris --format markdown
 iris --theme ember README.md
 iris --icons unicode README.md
+iris --wrap README.md
+iris --no-wrap README.md
 iris --list-themes
 ```
 
-Ember is the built-in default theme and uses Nerd Font icons by default. If the terminal does not use a Nerd Font, switch to the portable Unicode icon set with `--icons unicode` or set `icons = "unicode"` in `~/.config/iris/config.toml`.
-
 ## Navigation
 
-Inside the viewer:
+IRIS uses a common set of navigation controls across its viewers, with additional controls enabled when they apply to the active format.
+
+### General
+
+| Key | Action |
+| --- | --- |
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `←` / `→` | Scroll horizontally |
+| `Ctrl+D` / `Ctrl+U` | Half page down / up |
+| `PgDn` / `PgUp` | Page down / up |
+| `g` / `G` | Top / bottom |
+| Mouse wheel | Scroll vertically |
+| `Shift` + mouse wheel | Scroll horizontally |
+| Trackpad | Scroll vertically or horizontally |
+| `?` | Open help |
+| `q` | Quit IRIS |
+
+The help window is scrollable when its contents do not fit in the available terminal space.
+
+Format-specific controls are shown in the status bar and can always be explored with `?`.
+
+### Search
+
+Search is available for plain text, Markdown, and PDFs with an extractable text layer.
+
+| Key | Action |
+| --- | --- |
+| `/` | Start search |
+| `Enter` | Accept search |
+| `n` / `N` | Next / previous match |
+| `Esc` | Clear search and highlights |
+
+Search uses smart-case matching: lowercase queries are case-insensitive, while a query containing uppercase characters is case-sensitive.
+
+## Configuration
+
+IRIS stores its user configuration at:
 
 ```text
-j / k, arrows       Scroll vertically
-h / l, arrows       Scroll horizontally
-PgUp / PgDn         Scroll by page
-g / G               Top / bottom
-[h / ]h             Previous / next Markdown heading
-/                    Search
-n / N                Next / previous search result
-Esc                  Clear search / close an overlay
-w                    Toggle wrapping
-?                    Help
-q                    Quit
+~/.config/iris/iris.conf
 ```
 
-Mouse-wheel and trackpad scrolling are supported. Shift + wheel scrolls horizontally. Markdown links can be opened by clicking them.
+The file is created automatically when IRIS is started and no configuration exists. It uses TOML syntax despite the `.conf` extension.
 
-PDFs with an extractable text layer support the same `/` search and `n` / `N` navigation. Matching text is highlighted directly on the rendered pages, including invisible OCR text layers when the PDF provides one. Pure image-only scans without a text layer are not searchable yet.
+Example configuration:
 
-## Markdown images and HTML
+```toml
+theme = "ember"
+icons = "nerd-font"
+wrap = true
+tab_width = 4
+```
 
-Markdown images are rendered as terminal image blocks, including images placed inside normal paragraph flow. Standalone HTML `<img>` tags are rendered the same way. More complex inline HTML/image combinations fall back to a styled clickable placeholder so the surrounding text stays readable. IRIS detects terminal graphics capabilities and can use Kitty, Sixel, or iTerm2 image protocols, with a terminal-cell fallback when needed.
+Available settings:
 
-Local image paths are resolved relative to the Markdown document. Remote HTTP(S) images are also supported. Common raster formats include PNG, JPEG, GIF, WebP, BMP, and ICO, and SVG images are rasterized automatically before being sent to the terminal graphics protocol.
+| Setting | Description | Default |
+| --- | --- | --- |
+| `theme` | Theme name or custom theme | `"ember"` |
+| `icons` | `"nerd-font"` or `"unicode"` | `"nerd-font"` |
+| `wrap` | Wrap long prose lines | `true` |
+| `tab_width` | Number of spaces used for tabs, from 1 to 16 | `4` |
 
-IRIS also renders a useful Markdown-oriented subset of embedded HTML, including common formatting, headings, links, lists, blockquotes, code, `<pre>`, `<mark>`, `<kbd>`, `<br>`, `<hr>`, and image tags. It does not execute JavaScript or behave as a web browser.
+Command-line options override the corresponding configuration values for the current invocation.
+
+## Themes
+
+Ember is the built-in default theme.
+
+Custom themes can be placed in:
+
+```text
+~/.config/iris/themes/
+```
+
+Use `iris --list-themes` to list the themes IRIS can find and `--theme <name>` to select one.
+
+IRIS uses Nerd Font icons by default. If the active terminal font does not provide Nerd Font glyphs, use the portable Unicode icon set:
+
+```bash
+iris --icons unicode README.md
+```
+
+or set:
+
+```toml
+icons = "unicode"
+```
+
+in `iris.conf`.
 
 ## Unicode
 
-IRIS uses UTF-8 throughout and display-width-aware wrapping. CJK text, accented characters, Cyrillic, Greek, language symbols, combining characters, and emoji can be rendered as long as the active terminal/font provides the required glyphs.
+IRIS uses UTF-8 throughout and display-width-aware wrapping. CJK text, accented characters, Cyrillic, Greek, language symbols, combining characters, and emoji can be rendered as long as the active terminal and font provide the required glyphs.
 
 Full bidirectional layout for right-to-left scripts depends on terminal support and is not currently treated as a dedicated layout mode.
+
+## License
+
+IRIS is licensed under the MIT License. See [LICENSE](LICENSE) for details.
