@@ -93,6 +93,16 @@ iris
 
 Cargo installs binaries into `~/.cargo/bin` by default, so make sure that directory is on your `PATH`.
 
+### Debian and Ubuntu
+
+Linux releases include `.deb` packages for `amd64` and `arm64`. Download the package for your architecture from the GitHub Releases page, then install it with APT:
+
+```bash
+sudo apt install ./iris-reader_*_$(dpkg --print-architecture).deb
+```
+
+The package is named `iris-reader`, while the installed command is `iris`. Installing a release `.deb` does not add an IRIS package repository, so newer releases must be downloaded and installed the same way.
+
 ### Prebuilt GitHub release
 
 Download the archive for your platform from the GitHub Releases page, extract it, and place the `iris` binary somewhere on your `PATH`.
@@ -127,6 +137,14 @@ How IRIS should be updated depends on how it was installed.
 cargo install iris-reader --locked --force
 ```
 
+### Debian and Ubuntu
+
+Download the newer `.deb` package from the GitHub Releases page and install it over the existing package:
+
+```bash
+sudo apt install ./iris-reader_*_$(dpkg --print-architecture).deb
+```
+
 ### Prebuilt GitHub release
 
 Download the newer release for your platform and replace the existing `iris` / `iris.exe` binary.
@@ -147,6 +165,12 @@ This performs a fast-forward-only `git pull`, rebuilds IRIS in release mode, and
 
 ```bash
 cargo uninstall iris-reader
+```
+
+### Debian and Ubuntu
+
+```bash
+sudo apt remove iris-reader
 ```
 
 ### Prebuilt or local installation
