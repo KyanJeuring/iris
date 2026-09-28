@@ -103,6 +103,30 @@ sudo apt install ./iris-reader_*_$(dpkg --print-architecture).deb
 
 The package is named `iris-reader`, while the installed command is `iris`. Installing a release `.deb` does not add an IRIS package repository, so newer releases must be downloaded and installed the same way.
 
+### Fedora, RHEL, and openSUSE
+
+Linux releases also include `.rpm` packages for `x86_64` and `aarch64`. Download the package for your architecture from the GitHub Releases page.
+
+Fedora and RHEL-based systems can install it with:
+
+```bash
+sudo dnf install ./iris-reader-*.rpm
+```
+
+On openSUSE, use:
+
+```bash
+sudo zypper install ./iris-reader-*.rpm
+```
+
+### Arch Linux, Manjaro, and EndeavourOS
+
+Linux releases include native `.pkg.tar.zst` packages for `x86_64` and `aarch64`. Download the package from the GitHub Releases page and install it with:
+
+```bash
+sudo pacman -U ./iris-reader-*.pkg.tar.zst
+```
+
 ### Prebuilt GitHub release
 
 Download the archive for your platform from the GitHub Releases page, extract it, and place the `iris` binary somewhere on your `PATH`.
@@ -145,6 +169,28 @@ Download the newer `.deb` package from the GitHub Releases page and install it o
 sudo apt install ./iris-reader_*_$(dpkg --print-architecture).deb
 ```
 
+### Fedora, RHEL, and openSUSE
+
+Download the newer `.rpm` package from the GitHub Releases page and install it over the existing package:
+
+```bash
+sudo dnf install ./iris-reader-*.rpm
+```
+
+On openSUSE:
+
+```bash
+sudo zypper install ./iris-reader-*.rpm
+```
+
+### Arch Linux, Manjaro, and EndeavourOS
+
+Download the newer `.pkg.tar.zst` package from the GitHub Releases page and install it with:
+
+```bash
+sudo pacman -U ./iris-reader-*.pkg.tar.zst
+```
+
 ### Prebuilt GitHub release
 
 Download the newer release for your platform and replace the existing `iris` / `iris.exe` binary.
@@ -171,6 +217,24 @@ cargo uninstall iris-reader
 
 ```bash
 sudo apt remove iris-reader
+```
+
+### Fedora and RHEL
+
+```bash
+sudo dnf remove iris-reader
+```
+
+### openSUSE
+
+```bash
+sudo zypper remove iris-reader
+```
+
+### Arch Linux, Manjaro, and EndeavourOS
+
+```bash
+sudo pacman -R iris-reader
 ```
 
 ### Prebuilt or local installation
