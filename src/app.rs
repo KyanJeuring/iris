@@ -173,7 +173,7 @@ impl App {
         };
         let block = Block::bordered()
             .title(title)
-            .border_style(self.theme.status_accent)
+            .border_style(self.theme.border)
             .padding(Padding::uniform(1));
         self.viewport_area = block.inner(content_area);
         self.viewport_width = self.viewport_area.width.max(1);

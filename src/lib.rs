@@ -19,10 +19,12 @@ use cli::Cli;
 use config::Config;
 use input::read_input;
 use renderer::ViewDocument;
-use theme::Theme;
+use theme::{Theme, ensure_bundled_themes};
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    ensure_bundled_themes();
 
     if cli.list_themes {
         for theme in Theme::list_available() {

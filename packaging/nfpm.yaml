@@ -1,0 +1,47 @@
+name: iris-reader
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${NFPM_VERSION}
+version_schema: semver
+release: 1
+
+section: utils
+priority: optional
+maintainer: Kyan Jeuring <KyanJeuring@users.noreply.github.com>
+vendor: IRIS
+homepage: https://github.com/KyanJeuring/iris
+license: MIT
+description: |
+  Terminal-native viewer for documents and data.
+  IRIS is a terminal-native viewer for text, Markdown, images, PDFs,
+  structured data, and standard input.
+
+contents:
+  - src: ${NFPM_BINARY}
+    dst: /usr/bin/iris
+    file_info:
+      mode: 0755
+
+  - src: LICENSE
+    dst: /usr/share/licenses/iris-reader/LICENSE
+    file_info:
+      mode: 0644
+
+overrides:
+  rpm:
+    depends:
+      - glibc
+      - libgcc
+
+  archlinux:
+    depends:
+      - glibc
+      - gcc-libs
+
+archlinux:
+  pkgbase: iris-reader
+  packager: Kyan Jeuring <KyanJeuring@users.noreply.github.com>
+
+rpm:
+  packager: Kyan Jeuring <KyanJeuring@users.noreply.github.com>
+  compression: zstd

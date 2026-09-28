@@ -1,51 +1,53 @@
-name = "Ember"
+# IRIS built-in default theme.
+#
+# This theme follows the user's terminal colors for the main UI while using
+# standard ANSI colors for document accents and semantic information.
+
+name = "Default"
 
 [palette]
-bg0 = "#0B0B0B"
-bg1 = "#141414"
-bg2 = "#1C1C1C"
-bg3 = "#252525"
-fg0 = "#F2EEE9"
-fg1 = "#C9C3BC"
-muted = "#7F766E"
-orange = "#FF7500"
-orange_bright = "#FF8A2B"
-orange_dark = "#C95C00"
-red = "#F25F5C"
-green = "#8BCB82"
-yellow = "#E6C15A"
-blue = "#5B9CF6"
-purple = "#B58AF3"
-cyan = "#58C3C3"
+bg0 = "default"
+bg1 = "default"
+bg2 = "default"
+bg3 = "default"
+fg0 = "default"
+fg1 = "default"
+muted = "darkgray"
+red = "red"
+green = "green"
+yellow = "yellow"
+blue = "blue"
+purple = "magenta"
+cyan = "cyan"
 
 [document]
 foreground = "fg0"
 background = "bg0"
 
 [heading.h1]
-foreground = "orange_bright"
+foreground = "blue"
 bold = true
 separator = "double"
 
 [heading.h2]
-foreground = "orange"
+foreground = "cyan"
 bold = true
 separator = "single"
 
 [heading.h3]
-foreground = "blue"
-bold = true
-
-[heading.h4]
 foreground = "purple"
 bold = true
 
+[heading.h4]
+foreground = "green"
+bold = true
+
 [heading.h5]
-foreground = "cyan"
+foreground = "yellow"
 bold = true
 
 [heading.h6]
-foreground = "yellow"
+foreground = "fg0"
 italic = true
 
 [text.strong]
@@ -53,7 +55,7 @@ foreground = "fg0"
 bold = true
 
 [text.emphasis]
-foreground = "fg1"
+foreground = "fg0"
 italic = true
 
 [text.strikethrough]
@@ -61,8 +63,8 @@ foreground = "muted"
 strikethrough = true
 
 [inline_code]
-foreground = "orange_bright"
-background = "bg2"
+foreground = "cyan"
+background = "bg0"
 
 [link]
 foreground = "blue"
@@ -70,24 +72,24 @@ underline = true
 
 [list]
 foreground = "fg0"
-marker_foreground = "orange"
+marker_foreground = "cyan"
 bullet = "•"
 indent = 2
 
 [quote]
-foreground = "fg1"
+foreground = "fg0"
 border_foreground = "muted"
 
 [code]
 foreground = "fg0"
-background = "bg1"
-border_foreground = "fg1"
+background = "bg0"
+border_foreground = "muted"
 syntax_theme = "base16-ocean.dark"
 
 [table]
 foreground = "fg0"
-border_foreground = "fg1"
-header_foreground = "orange"
+border_foreground = "muted"
+header_foreground = "blue"
 header_bold = true
 
 [horizontal_rule]
@@ -105,12 +107,12 @@ italic = true
 max_height = 14
 
 [html.mark]
-foreground = "bg0"
+foreground = "black"
 background = "yellow"
 
 [html.kbd]
-foreground = "orange_bright"
-background = "bg2"
+foreground = "cyan"
+background = "bg0"
 bold = true
 
 [html.underline]
@@ -163,38 +165,37 @@ bold = true
 
 [search.match]
 foreground = "fg0"
-background = "bg3"
+underline = true
 
 [search.current]
-foreground = "bg0"
-background = "orange"
+foreground = "black"
+background = "yellow"
 bold = true
 
 [search.prompt]
-foreground = "orange_bright"
+foreground = "cyan"
 bold = true
 
 [ui.border]
-foreground = "orange"
-bold = true
+foreground = "fg0"
 
 [ui.status]
-foreground = "muted"
+foreground = "fg0"
 background = "bg0"
 
 [ui.status_accent]
-foreground = "orange"
+foreground = "cyan"
 bold = true
 
 [ui.help]
 foreground = "fg0"
-background = "bg1"
+background = "bg0"
 
 [ui.help_border]
-foreground = "orange"
+foreground = "fg0"
 
 [ui.help_heading]
-foreground = "orange_bright"
+foreground = "blue"
 bold = true
 
 [ui.help_key]

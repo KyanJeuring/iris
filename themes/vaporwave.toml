@@ -1,48 +1,45 @@
-name = "Ember"
+name = "Vaporwave"
 
 [palette]
-bg0 = "#0B0B0B"
-bg1 = "#141414"
-bg2 = "#1C1C1C"
-bg3 = "#252525"
-fg0 = "#F2EEE9"
-fg1 = "#C9C3BC"
-muted = "#7F766E"
-orange = "#FF7500"
-orange_bright = "#FF8A2B"
-orange_dark = "#C95C00"
-red = "#F25F5C"
-green = "#8BCB82"
-yellow = "#E6C15A"
-blue = "#5B9CF6"
-purple = "#B58AF3"
-cyan = "#58C3C3"
+bg0 = "#160D24"
+bg1 = "#211231"
+bg2 = "#301841"
+bg3 = "#47205A"
+fg0 = "#F4E8FF"
+fg1 = "#D6BEE8"
+muted = "#8D6FA4"
+pink = "#FF71CE"
+cyan = "#01CDFE"
+purple = "#B967FF"
+blue = "#6A8DFF"
+yellow = "#FFF275"
+green = "#72F1B8"
+red = "#FF5F87"
 
 [document]
 foreground = "fg0"
 background = "bg0"
 
 [heading.h1]
-foreground = "orange_bright"
+foreground = "pink"
 bold = true
 separator = "double"
 
 [heading.h2]
-foreground = "orange"
+foreground = "cyan"
 bold = true
 separator = "single"
 
 [heading.h3]
-foreground = "blue"
-bold = true
-
-[heading.h4]
 foreground = "purple"
 bold = true
 
-[heading.h5]
-foreground = "cyan"
+[heading.h4]
+foreground = "blue"
 bold = true
+
+[heading.h5]
+foreground = "pink"
 
 [heading.h6]
 foreground = "yellow"
@@ -61,37 +58,37 @@ foreground = "muted"
 strikethrough = true
 
 [inline_code]
-foreground = "orange_bright"
+foreground = "cyan"
 background = "bg2"
 
 [link]
-foreground = "blue"
+foreground = "cyan"
 underline = true
 
 [list]
 foreground = "fg0"
-marker_foreground = "orange"
+marker_foreground = "pink"
 bullet = "•"
 indent = 2
 
 [quote]
 foreground = "fg1"
-border_foreground = "muted"
+border_foreground = "purple"
 
 [code]
 foreground = "fg0"
 background = "bg1"
-border_foreground = "fg1"
-syntax_theme = "base16-ocean.dark"
+border_foreground = "purple"
+syntax_theme = "base16-mocha.dark"
 
 [table]
 foreground = "fg0"
-border_foreground = "fg1"
-header_foreground = "orange"
+border_foreground = "purple"
+header_foreground = "cyan"
 header_bold = true
 
 [horizontal_rule]
-foreground = "muted"
+foreground = "purple"
 
 [task.checked]
 foreground = "green"
@@ -100,7 +97,7 @@ foreground = "green"
 foreground = "muted"
 
 [image]
-foreground = "purple"
+foreground = "pink"
 italic = true
 max_height = 14
 
@@ -109,7 +106,7 @@ foreground = "bg0"
 background = "yellow"
 
 [html.kbd]
-foreground = "orange_bright"
+foreground = "pink"
 background = "bg2"
 bold = true
 
@@ -142,7 +139,7 @@ alert_caution = "✖"
 image = "▣"
 
 [alert.note]
-foreground = "blue"
+foreground = "cyan"
 bold = true
 
 [alert.tip]
@@ -167,15 +164,15 @@ background = "bg3"
 
 [search.current]
 foreground = "bg0"
-background = "orange"
+background = "pink"
 bold = true
 
 [search.prompt]
-foreground = "orange_bright"
+foreground = "cyan"
 bold = true
 
 [ui.border]
-foreground = "orange"
+foreground = "pink"
 bold = true
 
 [ui.status]
@@ -183,7 +180,7 @@ foreground = "muted"
 background = "bg0"
 
 [ui.status_accent]
-foreground = "orange"
+foreground = "pink"
 bold = true
 
 [ui.help]
@@ -191,12 +188,12 @@ foreground = "fg0"
 background = "bg1"
 
 [ui.help_border]
-foreground = "orange"
+foreground = "pink"
 
 [ui.help_heading]
-foreground = "orange_bright"
+foreground = "cyan"
 bold = true
 
 [ui.help_key]
-foreground = "cyan"
+foreground = "purple"
 bold = true

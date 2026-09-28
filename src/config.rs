@@ -25,14 +25,11 @@ const DEFAULT_CONFIG: &str = r#"# IRIS configuration
 
 # Theme used by IRIS.
 #
-# The built-in default theme is:
-#   ember
-#
 # Custom themes can be placed in:
 #   ~/.config/iris/themes/
 #
 # Default:
-# theme = "ember"
+# theme = "default"
 
 
 # Icon set used for alerts, task lists, image placeholders,
@@ -79,7 +76,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme: "ember".to_string(),
+            theme: "default".to_string(),
             wrap: true,
             tab_width: 4,
             icons: IconMode::NerdFont,
@@ -195,7 +192,7 @@ mod tests {
     fn generated_config_uses_built_in_defaults_when_fully_commented() {
         let config: Config = toml::from_str(DEFAULT_CONFIG).expect("default config should parse");
 
-        assert_eq!(config.theme, "ember");
+        assert_eq!(config.theme, "default");
         assert!(config.wrap);
         assert_eq!(config.tab_width, 4);
         assert_eq!(config.icons, IconMode::NerdFont);

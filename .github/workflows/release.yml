@@ -67,12 +67,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             deb_arch: amd64
+            package_arch: x86_64
 
           - name: Linux ARM64
             runner: ubuntu-26.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-aarch64
             deb_arch: arm64
+            package_arch: aarch64
 
           - name: macOS Intel
             runner: macos-26-intel
@@ -152,6 +154,47 @@ jobs:
 
           cd dist
           sha256sum "$DEB_FILE" > "$DEB_FILE.sha256"
+
+      # RPM and Arch packages are additive. The existing .deb packaging above
+      # remains unchanged because it is already proven in releases.
+      - name: Install Go for Linux package tooling
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install nFPM
+        if: runner.os == 'Linux'
+        shell: bash
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+
+      - name: Package RPM and Arch archives
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          NFPM_ARCH: ${{ matrix.package_arch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          export NFPM_VERSION="$VERSION"
+          export NFPM_BINARY="$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/iris"
+
+          RPM_FILE="iris-reader-${VERSION}-1.${NFPM_ARCH}.rpm"
+          ARCH_FILE="iris-reader-${VERSION}-1-${NFPM_ARCH}.pkg.tar.zst"
+
+          nfpm package \
+            --config packaging/nfpm.yaml \
+            --packager rpm \
+            --target "dist/$RPM_FILE"
+
+          nfpm package \
+            --config packaging/nfpm.yaml \
+            --packager archlinux \
+            --target "dist/$ARCH_FILE"
+
+          cd dist
+          sha256sum "$RPM_FILE" > "$RPM_FILE.sha256"
+          sha256sum "$ARCH_FILE" > "$ARCH_FILE.sha256"
 
       - name: Package Windows binary
         if: runner.os == 'Windows'
