@@ -7,10 +7,12 @@ release: 1
 
 section: utils
 priority: optional
+
 maintainer: Kyan Jeuring <KyanJeuring@users.noreply.github.com>
 vendor: IRIS
 homepage: https://github.com/KyanJeuring/iris
 license: MIT
+
 description: |
   Terminal-native viewer for documents and data.
   IRIS is a terminal-native viewer for text, Markdown, images, PDFs,
@@ -19,6 +21,7 @@ description: |
 contents:
   - src: ${NFPM_BINARY}
     dst: /usr/bin/iris
+    expand: true
     file_info:
       mode: 0755
 
