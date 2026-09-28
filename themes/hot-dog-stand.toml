@@ -1,55 +1,54 @@
-name = "Ember"
+name = "Hot Dog Stand"
 
 [palette]
-bg0 = "#0B0B0B"
-bg1 = "#141414"
-bg2 = "#1C1C1C"
-bg3 = "#252525"
-fg0 = "#F2EEE9"
-fg1 = "#C9C3BC"
-muted = "#7F766E"
-orange = "#FF7500"
-orange_bright = "#FF8A2B"
-orange_dark = "#C95C00"
-red = "#F25F5C"
-green = "#8BCB82"
-yellow = "#E6C15A"
-blue = "#5B9CF6"
-purple = "#B58AF3"
-cyan = "#58C3C3"
+bg0 = "#C40000"
+bg1 = "#A30000"
+bg2 = "#7F0000"
+bg3 = "#FF2B00"
+fg0 = "#FFF100"
+fg1 = "#FFE45A"
+muted = "#FFB82E"
+yellow = "#FFF100"
+red = "#FF0000"
+darkred = "#670000"
+black = "#080000"
+white = "#FFF7D6"
+green = "#64FF4A"
+cyan = "#54E8FF"
+purple = "#FF61FF"
 
 [document]
 foreground = "fg0"
 background = "bg0"
 
 [heading.h1]
-foreground = "orange_bright"
+foreground = "black"
+background = "yellow"
 bold = true
 separator = "double"
 
 [heading.h2]
-foreground = "orange"
+foreground = "yellow"
 bold = true
 separator = "single"
 
 [heading.h3]
-foreground = "blue"
+foreground = "white"
 bold = true
 
 [heading.h4]
-foreground = "purple"
-bold = true
-
-[heading.h5]
 foreground = "cyan"
 bold = true
 
+[heading.h5]
+foreground = "green"
+
 [heading.h6]
-foreground = "yellow"
+foreground = "fg1"
 italic = true
 
 [text.strong]
-foreground = "fg0"
+foreground = "white"
 bold = true
 
 [text.emphasis]
@@ -61,37 +60,37 @@ foreground = "muted"
 strikethrough = true
 
 [inline_code]
-foreground = "orange_bright"
-background = "bg2"
+foreground = "yellow"
+background = "darkred"
 
 [link]
-foreground = "blue"
+foreground = "cyan"
 underline = true
 
 [list]
 foreground = "fg0"
-marker_foreground = "orange"
+marker_foreground = "white"
 bullet = "•"
 indent = 2
 
 [quote]
-foreground = "fg1"
-border_foreground = "muted"
+foreground = "white"
+border_foreground = "yellow"
 
 [code]
-foreground = "fg0"
-background = "bg1"
-border_foreground = "fg1"
-syntax_theme = "base16-ocean.dark"
+foreground = "white"
+background = "darkred"
+border_foreground = "yellow"
+syntax_theme = "base16-eighties.dark"
 
 [table]
 foreground = "fg0"
-border_foreground = "fg1"
-header_foreground = "orange"
+border_foreground = "yellow"
+header_foreground = "white"
 header_bold = true
 
 [horizontal_rule]
-foreground = "muted"
+foreground = "yellow"
 
 [task.checked]
 foreground = "green"
@@ -105,16 +104,16 @@ italic = true
 max_height = 14
 
 [html.mark]
-foreground = "bg0"
+foreground = "black"
 background = "yellow"
 
 [html.kbd]
-foreground = "orange_bright"
-background = "bg2"
+foreground = "yellow"
+background = "darkred"
 bold = true
 
 [html.underline]
-foreground = "fg0"
+foreground = "white"
 underline = true
 
 [html.subtle]
@@ -142,7 +141,7 @@ alert_caution = "✖"
 image = "▣"
 
 [alert.note]
-foreground = "blue"
+foreground = "cyan"
 bold = true
 
 [alert.tip]
@@ -158,43 +157,43 @@ foreground = "yellow"
 bold = true
 
 [alert.caution]
-foreground = "red"
+foreground = "white"
 bold = true
 
 [search.match]
-foreground = "fg0"
-background = "bg3"
+foreground = "yellow"
+background = "darkred"
 
 [search.current]
-foreground = "bg0"
-background = "orange"
+foreground = "black"
+background = "yellow"
 bold = true
 
 [search.prompt]
-foreground = "orange_bright"
+foreground = "white"
 bold = true
 
 [ui.border]
-foreground = "orange"
+foreground = "yellow"
 bold = true
 
 [ui.status]
-foreground = "muted"
+foreground = "fg1"
 background = "bg0"
 
 [ui.status_accent]
-foreground = "orange"
+foreground = "yellow"
 bold = true
 
 [ui.help]
-foreground = "fg0"
-background = "bg1"
+foreground = "yellow"
+background = "darkred"
 
 [ui.help_border]
-foreground = "orange"
+foreground = "yellow"
 
 [ui.help_heading]
-foreground = "orange_bright"
+foreground = "white"
 bold = true
 
 [ui.help_key]

@@ -270,7 +270,7 @@ The file is created automatically when IRIS is started and no configuration exis
 Example configuration:
 
 ```toml
-theme = "ember"
+theme = "default"
 icons = "nerd-font"
 wrap = true
 tab_width = 4
@@ -280,7 +280,7 @@ Available settings:
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| `theme` | Theme name or custom theme | `"ember"` |
+| `theme` | Theme name or custom theme | `"default"` |
 | `icons` | `"nerd-font"` or `"unicode"` | `"nerd-font"` |
 | `wrap` | Wrap long prose lines | `true` |
 | `tab_width` | Number of spaces used for tabs, from 1 to 16 | `4` |
@@ -288,8 +288,6 @@ Available settings:
 Command-line options override the corresponding configuration values for the current invocation.
 
 ## Themes
-
-Ember is the built-in default theme.
 
 Custom themes can be placed in:
 

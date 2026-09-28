@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
-    fs,
+    collections::{BTreeSet, HashMap},
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -10,7 +11,50 @@ use serde::Deserialize;
 
 use crate::options::IconMode;
 
+const DEFAULT_TOML: &str = include_str!("../themes/default.toml");
 const EMBER_TOML: &str = include_str!("../themes/ember.toml");
+const NORD_TOML: &str = include_str!("../themes/nord.toml");
+const GRUVBOX_TOML: &str = include_str!("../themes/gruvbox.toml");
+const DRACULA_TOML: &str = include_str!("../themes/dracula.toml");
+const CATPPUCCIN_MOCHA_TOML: &str = include_str!("../themes/catppuccin-mocha.toml");
+const TOKYO_NIGHT_TOML: &str = include_str!("../themes/tokyo-night.toml");
+const ROSE_PINE_TOML: &str = include_str!("../themes/rose-pine.toml");
+const KANAGAWA_TOML: &str = include_str!("../themes/kanagawa.toml");
+const EVERFOREST_DARK_TOML: &str = include_str!("../themes/everforest-dark.toml");
+const ONE_DARK_TOML: &str = include_str!("../themes/one-dark.toml");
+const CATPPUCCIN_LATTE_TOML: &str = include_str!("../themes/catppuccin-latte.toml");
+const GRUVBOX_LIGHT_TOML: &str = include_str!("../themes/gruvbox-light.toml");
+const ROSE_PINE_DAWN_TOML: &str = include_str!("../themes/rose-pine-dawn.toml");
+const SOLARIZED_LIGHT_TOML: &str = include_str!("../themes/solarized-light.toml");
+const EVERFOREST_LIGHT_TOML: &str = include_str!("../themes/everforest-light.toml");
+const MATRIX_TOML: &str = include_str!("../themes/matrix.toml");
+const AMBER_CRT_TOML: &str = include_str!("../themes/amber-crt.toml");
+const VAPORWAVE_TOML: &str = include_str!("../themes/vaporwave.toml");
+const RETRO_BLUE_TOML: &str = include_str!("../themes/retro-blue.toml");
+const HOT_DOG_STAND_TOML: &str = include_str!("../themes/hot-dog-stand.toml");
+
+const BUNDLED_THEMES: &[(&str, &str)] = &[
+    ("ember", EMBER_TOML),
+    ("nord", NORD_TOML),
+    ("gruvbox", GRUVBOX_TOML),
+    ("dracula", DRACULA_TOML),
+    ("catppuccin-mocha", CATPPUCCIN_MOCHA_TOML),
+    ("tokyo-night", TOKYO_NIGHT_TOML),
+    ("rose-pine", ROSE_PINE_TOML),
+    ("kanagawa", KANAGAWA_TOML),
+    ("everforest-dark", EVERFOREST_DARK_TOML),
+    ("one-dark", ONE_DARK_TOML),
+    ("catppuccin-latte", CATPPUCCIN_LATTE_TOML),
+    ("gruvbox-light", GRUVBOX_LIGHT_TOML),
+    ("rose-pine-dawn", ROSE_PINE_DAWN_TOML),
+    ("solarized-light", SOLARIZED_LIGHT_TOML),
+    ("everforest-light", EVERFOREST_LIGHT_TOML),
+    ("matrix", MATRIX_TOML),
+    ("amber-crt", AMBER_CRT_TOML),
+    ("vaporwave", VAPORWAVE_TOML),
+    ("retro-blue", RETRO_BLUE_TOML),
+    ("hot-dog-stand", HOT_DOG_STAND_TOML),
+];
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StyleSpec {
@@ -136,6 +180,8 @@ struct SearchSection {
 
 #[derive(Debug, Clone, Deserialize)]
 struct UiSection {
+    #[serde(default)]
+    border: Option<StyleSpec>,
     status: StyleSpec,
     status_accent: StyleSpec,
     help: StyleSpec,
@@ -237,6 +283,7 @@ pub struct Theme {
     pub search_match: Style,
     pub search_current: Style,
     pub search_prompt: Style,
+    pub border: Style,
     pub status: Style,
     pub status_accent: Style,
     pub help: Style,
@@ -246,13 +293,17 @@ pub struct Theme {
 }
 
 impl Theme {
+    pub fn builtin_default(icon_mode: IconMode) -> Result<Self> {
+        Self::from_toml(DEFAULT_TOML, "built-in default theme", icon_mode)
+    }
+
     pub fn ember(icon_mode: IconMode) -> Result<Self> {
-        Self::from_toml(EMBER_TOML, "built-in Ember theme", icon_mode)
+        Self::from_toml(EMBER_TOML, "bundled Ember theme", icon_mode)
     }
 
     pub fn load(name_or_path: &str, icon_mode: IconMode) -> Result<Self> {
-        if name_or_path.eq_ignore_ascii_case("ember") {
-            return Self::ember(icon_mode);
+        if name_or_path.eq_ignore_ascii_case("default") {
+            return Self::builtin_default(icon_mode);
         }
 
         let direct = Path::new(name_or_path);
@@ -262,39 +313,66 @@ impl Theme {
             return Self::from_toml(&source, &direct.display().to_string(), icon_mode);
         }
 
+        let normalized = name_or_path.to_ascii_lowercase();
+        let file_name = if bundled_theme_source(&normalized).is_some() {
+            &normalized
+        } else {
+            name_or_path
+        };
+
         let path = themes_dir()
-            .map(|dir| dir.join(format!("{name_or_path}.toml")))
+            .map(|dir| dir.join(format!("{file_name}.toml")))
             .ok_or_else(|| anyhow::anyhow!("could not determine the user config directory"))?;
 
-        if !path.is_file() {
-            bail!(
-                "unknown theme '{name_or_path}' (expected '{}' or a theme file path)",
-                path.display()
+        if path.is_file() {
+            let source = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read theme '{}'", path.display()))?;
+            return Self::from_toml(&source, &path.display().to_string(), icon_mode);
+        }
+
+        if let Some(source) = bundled_theme_source(&normalized) {
+            return Self::from_toml(
+                source,
+                &format!("bundled {normalized} theme fallback"),
+                icon_mode,
             );
         }
 
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read theme '{}'", path.display()))?;
-        Self::from_toml(&source, &path.display().to_string(), icon_mode)
+        bail!(
+            "unknown theme '{name_or_path}' (expected '{}' or a theme file path)",
+            path.display()
+        );
     }
 
     pub fn list_available() -> Vec<String> {
-        let mut themes = vec!["ember (built-in)".to_string()];
+        let mut themes = BTreeSet::new();
+
+        for (name, _) in BUNDLED_THEMES {
+            themes.insert((*name).to_string());
+        }
+
         if let Some(dir) = themes_dir()
             && let Ok(entries) = fs::read_dir(dir)
         {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|v| v.to_str()) == Some("toml")
-                    && let Some(name) = path.file_stem().and_then(|v| v.to_str())
-                    && !name.eq_ignore_ascii_case("ember")
-                {
-                    themes.push(name.to_string());
+                if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+                    continue;
+                }
+
+                let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+
+                if !name.eq_ignore_ascii_case("default") {
+                    themes.insert(name.to_string());
                 }
             }
         }
-        themes.sort();
-        themes
+
+        let mut available = vec!["default (built-in)".to_string()];
+        available.extend(themes);
+        available
     }
 
     fn from_toml(source: &str, label: &str, icon_mode: IconMode) -> Result<Self> {
@@ -403,6 +481,10 @@ impl Theme {
             search_match: resolve_style(&file.search.match_style, palette)?,
             search_current: resolve_style(&file.search.current, palette)?,
             search_prompt: resolve_style(&file.search.prompt, palette)?,
+            border: match &file.ui.border {
+                Some(border) => resolve_style(border, palette)?,
+                None => resolve_style(&file.ui.status_accent, palette)?,
+            },
             status: resolve_style(&file.ui.status, palette)?,
             status_accent: resolve_style(&file.ui.status_accent, palette)?,
             help: resolve_style(&file.ui.help, palette)?,
@@ -421,12 +503,58 @@ impl Theme {
     }
 }
 
+pub fn ensure_bundled_themes() {
+    let Some(dir) = themes_dir() else {
+        return;
+    };
+
+    if let Err(error) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "iris: warning: could not create theme directory '{}': {error}",
+            dir.display()
+        );
+        return;
+    }
+
+    for (name, source) in BUNDLED_THEMES {
+        if let Err(error) = install_bundled_theme(&dir, name, source) {
+            eprintln!(
+                "iris: warning: could not install bundled theme '{}': {error}",
+                dir.join(format!("{name}.toml")).display()
+            );
+        }
+    }
+}
+
+fn install_bundled_theme(dir: &Path, name: &str, source: &str) -> std::io::Result<bool> {
+    let path = dir.join(format!("{name}.toml"));
+
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(error),
+    };
+
+    if let Err(error) = file.write_all(source.as_bytes()) {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+
+    Ok(true)
+}
+
+fn bundled_theme_source(name: &str) -> Option<&'static str> {
+    BUNDLED_THEMES
+        .iter()
+        .find_map(|(bundled_name, source)| (*bundled_name == name).then_some(*source))
+}
+
 fn default_image_height() -> u16 {
     14
 }
 
 pub fn themes_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("iris").join("themes"))
+    dirs::config_dir().map(|path| path.join("iris").join("themes"))
 }
 
 fn resolve_style(spec: &StyleSpec, palette: &HashMap<String, String>) -> Result<Style> {
@@ -499,20 +627,65 @@ fn parse_color(value: &str) -> Result<Color> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
+    fn temp_theme_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("iris-{name}-{}-{nonce}", std::process::id()))
+    }
+
     #[test]
-    fn built_in_ember_loads() {
-        let theme = Theme::ember(IconMode::NerdFont).unwrap();
-        assert_eq!(theme.name, "Ember");
+    fn built_in_default_loads() {
+        let theme = Theme::builtin_default(IconMode::NerdFont).unwrap();
+        assert_eq!(theme.name, "Default");
         assert_eq!(theme.heading.styles.len(), 6);
         assert_eq!(theme.symbols.task_checked, "󰄲");
     }
 
     #[test]
-    fn built_in_ember_has_unicode_fallback_symbols() {
-        let theme = Theme::ember(IconMode::Unicode).unwrap();
+    fn built_in_default_has_unicode_fallback_symbols() {
+        let theme = Theme::builtin_default(IconMode::Unicode).unwrap();
         assert_eq!(theme.symbols.task_checked, "☑");
         assert_eq!(theme.symbols.alert_warning, "⚠");
+    }
+
+    #[test]
+    fn bundled_themes_all_parse() {
+        for (name, source) in BUNDLED_THEMES {
+            Theme::from_toml(source, name, IconMode::Unicode)
+                .unwrap_or_else(|error| panic!("{name} should parse: {error:#}"));
+        }
+    }
+
+    #[test]
+    fn installing_bundled_theme_does_not_overwrite_existing_file() {
+        let dir = temp_theme_dir("preserve-theme");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ember.toml");
+        fs::write(&path, "custom ember contents").unwrap();
+
+        let installed = install_bundled_theme(&dir, "ember", EMBER_TOML).unwrap();
+
+        assert!(!installed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "custom ember contents");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn installing_bundled_theme_creates_missing_file() {
+        let dir = temp_theme_dir("install-theme");
+        fs::create_dir_all(&dir).unwrap();
+
+        let installed = install_bundled_theme(&dir, "ember", EMBER_TOML).unwrap();
+        let path = dir.join("ember.toml");
+
+        assert!(installed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), EMBER_TOML);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
