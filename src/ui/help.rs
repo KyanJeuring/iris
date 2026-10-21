@@ -25,11 +25,12 @@ pub fn render(
     frame: &mut Frame,
     theme: &Theme,
     markdown: bool,
+    markdown_history: bool,
     image: bool,
     pdf: bool,
     scroll: usize,
 ) -> HelpRenderResult {
-    let lines = help_lines(theme, markdown, image, pdf);
+    let lines = help_lines(theme, markdown, markdown_history, image, pdf);
     let content_height = lines.len().min(usize::from(u16::MAX)) as u16;
     let decoration_height = 2 + HELP_VERTICAL_PADDING.saturating_mul(2);
     let desired_height = content_height.saturating_add(decoration_height);
@@ -69,7 +70,13 @@ pub fn render(
     }
 }
 
-fn help_lines(theme: &Theme, markdown: bool, image: bool, pdf: bool) -> Vec<Line<'static>> {
+fn help_lines(
+    theme: &Theme,
+    markdown: bool,
+    markdown_history: bool,
+    image: bool,
+    pdf: bool,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     section(&mut lines, "Navigation", theme);
     shortcut(&mut lines, "j / ↓", "Scroll down", theme);
@@ -112,6 +119,9 @@ fn help_lines(theme: &Theme, markdown: bool, image: bool, pdf: bool) -> Vec<Line
     if markdown {
         section(&mut lines, "Headings & links", theme);
         shortcut(&mut lines, "h / H", "Next / previous heading", theme);
+        if markdown_history {
+            shortcut(&mut lines, "Alt+← / Alt+→", "Back / forward", theme);
+        }
         shortcut(&mut lines, "Left click", "Open a link or image", theme);
     }
 
@@ -197,4 +207,28 @@ fn centered(area: Rect, desired_width: u16, desired_height: u16) -> Rect {
         width,
         height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::options::IconMode;
+
+    use super::*;
+
+    fn rendered_help(markdown: bool, markdown_history: bool) -> String {
+        let theme = Theme::builtin_default(IconMode::Unicode).unwrap();
+        help_lines(&theme, markdown, markdown_history, false, false)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn history_shortcut_only_appears_for_markdown_file_history() {
+        assert!(rendered_help(true, true).contains("Alt+← / Alt+→"));
+        assert!(!rendered_help(true, false).contains("Alt+← / Alt+→"));
+        assert!(!rendered_help(false, false).contains("Alt+← / Alt+→"));
+    }
 }

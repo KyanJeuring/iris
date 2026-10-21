@@ -26,7 +26,7 @@ The project is designed to grow beyond these formats into structured data such a
 
 ### Text and standard input
 
-Plain text can be opened directly or piped into IRIS. Long lines can be wrapped to the terminal width or viewed using horizontal scrolling.
+Plain text can be opened directly or piped into IRIS. Long lines can be wrapped to the terminal width or viewed using horizontal scrolling. For piped input, IRIS makes a best-effort attempt on Linux to show the directly connected producer command in the title; other platforms and failed detections fall back to `stdin`.
 
 IRIS supports mouse text selection, copying selected text, searching, mouse-wheel and trackpad scrolling, and Vim-style keyboard navigation.
 
@@ -48,7 +48,7 @@ Markdown is rendered as a structured terminal document rather than displayed as 
 - Markdown images
 - Embedded HTML for common document elements
 
-Markdown headings can be navigated directly, and links or images can be opened with the mouse.
+Markdown headings can be navigated directly, and links or images can be opened with the mouse. Local Markdown links open in the current IRIS process, with `Alt+Left` and `Alt+Right` navigating backward and forward through document history.
 
 ### Images
 
@@ -267,9 +267,12 @@ Read from standard input:
 ```bash
 journalctl | iris
 cat README.md | iris --format markdown
+journalctl -u ssh | iris --title "SSH logs"
 ```
 
 IRIS detects supported file types automatically. Standard input is treated as plain text by default; use `--format markdown` when piped input should be rendered as Markdown.
+
+`--title <TITLE>` overrides the viewer title without changing the semantic input name or file path. Without an override, piped input uses the directly connected producer command when Linux `/proc` discovery succeeds and otherwise displays `stdin`; IRIS does not attempt to reconstruct an entire shell pipeline.
 
 Useful command-line options include:
 
@@ -278,6 +281,7 @@ iris --help
 iris --version
 iris --format markdown
 iris --theme ember README.md
+iris --title "IRIS Docs" README.md
 iris --icons unicode README.md
 iris --wrap README.md
 iris --no-wrap README.md
@@ -295,6 +299,7 @@ IRIS uses a common set of navigation controls across its viewers, with additiona
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
 | `←` / `→` | Scroll horizontally |
+| `Alt+←` / `Alt+→` | Back / forward through Markdown document history |
 | `Ctrl+D` / `Ctrl+U` | Half page down / up |
 | `PgDn` / `PgUp` | Page down / up |
 | `g` / `G` | Top / bottom |
