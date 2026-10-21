@@ -31,13 +31,16 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    cli::FormatArg,
     image::ImageManager,
-    input::InputKind,
+    input::{Input, InputKind, is_markdown_path, read_input},
+    navigation::{HistoryDirection, NavigationEntry, NavigationHistory, breadcrumb_line},
     pdf::{PdfLayoutMode, PdfSearchHighlight, apply_search_highlights},
-    renderer::{NodeId, RenderedDocument, RenderedLine, ViewDocument},
+    renderer::{NodeId, RenderedDocument, RenderedLine, RenderedLink, ViewDocument},
     search::{SearchMatch, SearchMatcher, SearchState},
     selection::{DocumentPosition, Selection},
     theme::Theme,
+    title::{truncate_end, truncate_with_suffix},
     ui,
 };
 
@@ -46,8 +49,10 @@ const MOUSE_HORIZONTAL_SCROLL: usize = 4;
 
 pub struct App {
     name: String,
+    display_title: String,
     kind: InputKind,
     base_dir: Option<PathBuf>,
+    source_path: Option<PathBuf>,
     document: ViewDocument,
     theme: Theme,
     search: SearchState,
@@ -77,22 +82,35 @@ pub struct App {
     mouse_selecting: bool,
     mouse_dragged: bool,
     mouse_drag_position: Option<(u16, u16)>,
+    hovered_link: Option<usize>,
+    pending_anchor: Option<String>,
+    pending_viewport_restore: Option<(usize, usize)>,
+    pending_graphics_cleanup: String,
+    navigation: Option<NavigationHistory>,
 }
 
 impl App {
     pub fn new(
-        name: String,
-        kind: InputKind,
-        base_dir: Option<PathBuf>,
+        input: Input,
         document: ViewDocument,
         theme: Theme,
         wrap: bool,
         tab_width: usize,
     ) -> Self {
+        let navigation = (input.kind == InputKind::Markdown)
+            .then(|| {
+                input.source_path.clone().map(|path| {
+                    NavigationHistory::new(NavigationEntry::new(path, input.display_title.clone()))
+                })
+            })
+            .flatten();
+
         Self {
-            name,
-            kind,
-            base_dir,
+            name: input.name,
+            display_title: input.display_title,
+            kind: input.kind,
+            base_dir: input.base_dir,
+            source_path: input.source_path,
             document,
             theme,
             search: SearchState::default(),
@@ -118,6 +136,11 @@ impl App {
             mouse_selecting: false,
             mouse_dragged: false,
             mouse_drag_position: None,
+            hovered_link: None,
+            pending_anchor: None,
+            pending_viewport_restore: None,
+            pending_graphics_cleanup: String::new(),
+            navigation,
         }
     }
 
@@ -152,6 +175,7 @@ impl App {
             }
             Event::Resize(_, _) => {
                 self.dirty = true;
+                self.clear_hover();
                 false
             }
             _ => false,
@@ -166,11 +190,7 @@ impl App {
             ViewDocument::Pdf(document) => Some(document.zoom_percent()),
             _ => self.document.image_zoom_percent(),
         };
-        let title = match zoom_percent {
-            Some(100) => format!(" {} [fit] ", self.name),
-            Some(zoom) => format!(" {} [{zoom}%] ", self.name),
-            None => format!(" {} ", self.name),
-        };
+        let title = self.viewer_title(content_area.width, zoom_percent);
         let block = Block::bordered()
             .title(title)
             .border_style(self.theme.border)
@@ -185,6 +205,7 @@ impl App {
 
             let viewer = Paragraph::new("").style(self.theme.document).block(block);
             frame.render_widget(viewer, content_area);
+            self.draw_pending_graphics_cleanup(frame, content_area);
             self.draw_pdf_pages(frame);
         } else {
             self.ensure_rendered(self.viewport_width, self.viewport_height);
@@ -200,6 +221,7 @@ impl App {
                     self.horizontal_scroll.min(u16::MAX as usize) as u16,
                 ));
             frame.render_widget(viewer, content_area);
+            self.draw_pending_graphics_cleanup(frame, content_area);
             self.draw_images(frame);
         }
 
@@ -273,6 +295,7 @@ impl App {
                 frame,
                 &self.theme,
                 self.document.is_markdown(),
+                self.navigation.is_some(),
                 self.document.is_image(),
                 self.document.is_pdf(),
                 self.help_scroll,
@@ -295,6 +318,45 @@ impl App {
                 frame.render_widget(PreservingGraphicsCommand(sequence), frame.area());
             }
         }
+    }
+
+    fn viewer_title(&self, area_width: u16, zoom_percent: Option<u16>) -> Line<'static> {
+        let available = usize::from(area_width.saturating_sub(2));
+        if available == 0 {
+            return Line::default();
+        }
+
+        let padding = usize::from(available >= 3);
+        let content_width = available.saturating_sub(padding.saturating_mul(2));
+        let content = if self.document.is_markdown()
+            && let Some(history) = &self.navigation
+        {
+            breadcrumb_line(
+                history,
+                content_width,
+                self.theme.border,
+                self.theme.status_accent.add_modifier(Modifier::BOLD),
+            )
+        } else {
+            let label = match zoom_percent {
+                Some(100) => truncate_with_suffix(&self.display_title, " [fit]", content_width),
+                Some(zoom) => {
+                    truncate_with_suffix(&self.display_title, &format!(" [{zoom}%]"), content_width)
+                }
+                None => truncate_end(&self.display_title, content_width),
+            };
+            Line::from(Span::styled(label, self.theme.border))
+        };
+
+        if padding == 0 {
+            return content;
+        }
+
+        let mut spans = Vec::with_capacity(content.spans.len() + 2);
+        spans.push(Span::styled(" ", self.theme.border));
+        spans.extend(content.spans);
+        spans.push(Span::styled(" ", self.theme.border));
+        Line::from(spans)
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -339,6 +401,7 @@ impl App {
                 self.clear_search();
             }
             KeyCode::Char('?') => {
+                self.clear_hover();
                 self.show_help = true;
                 self.help_scroll = 0;
             }
@@ -351,6 +414,12 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_up(self.half_page_height())
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.navigate_history(HistoryDirection::Back);
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.navigate_history(HistoryDirection::Forward);
+            }
             KeyCode::Char('h') if self.document.is_markdown() => self.next_heading(),
             KeyCode::Char('H') if self.document.is_markdown() => self.previous_heading(),
             KeyCode::Char('p') if self.document.is_pdf() => self.next_pdf_page(),
@@ -361,8 +430,14 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => self.scroll_left(1),
             KeyCode::PageDown => self.scroll_down(self.page_height()),
             KeyCode::PageUp => self.scroll_up(self.page_height()),
-            KeyCode::Home | KeyCode::Char('g') => self.vertical_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.vertical_scroll = self.max_vertical_scroll(),
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.vertical_scroll = 0;
+                self.clear_hover();
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.vertical_scroll = self.max_vertical_scroll();
+                self.clear_hover();
+            }
             KeyCode::Char('+') | KeyCode::Char('=') if self.document.is_image() => {
                 self.zoom_image_in();
             }
@@ -393,6 +468,7 @@ impl App {
             KeyCode::Char('w') if !self.document.is_image() && !self.document.is_pdf() => {
                 self.wrap = !self.wrap;
                 self.dirty = true;
+                self.clear_hover();
             }
             _ => {}
         }
@@ -450,6 +526,9 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) if self.mouse_selecting => {
                 self.finish_mouse_selection(mouse.column, mouse.row);
             }
+            MouseEventKind::Moved if !self.mouse_selecting => {
+                self.hovered_link = self.link_at_screen_position(mouse.column, mouse.row);
+            }
             MouseEventKind::Down(MouseButton::Left)
                 if self.document.is_image() || self.document.is_pdf() => {}
             _ => {}
@@ -457,6 +536,7 @@ impl App {
     }
 
     fn start_mouse_selection(&mut self, column: u16, row: u16) {
+        self.clear_hover();
         let Some((start, end)) = self.document_cell_bounds(column, row) else {
             return;
         };
@@ -646,6 +726,7 @@ impl App {
         {
             self.vertical_scroll = heading.line.min(self.max_vertical_scroll());
             self.horizontal_scroll = 0;
+            self.clear_hover();
         }
     }
 
@@ -660,6 +741,7 @@ impl App {
         if let Some(line) = target {
             self.vertical_scroll = line.min(self.max_vertical_scroll());
             self.horizontal_scroll = 0;
+            self.clear_hover();
         }
     }
 
@@ -931,17 +1013,15 @@ impl App {
     }
 
     fn open_link_at(&mut self, column: u16, row: u16) {
-        let area = self.viewport_area;
-        if column < area.x
-            || row < area.y
-            || column >= area.x.saturating_add(area.width)
-            || row >= area.y.saturating_add(area.height)
-        {
+        let Some((line, document_column)) = document_position_at_screen(
+            self.viewport_area,
+            self.vertical_scroll,
+            self.horizontal_scroll,
+            column,
+            row,
+        ) else {
             return;
-        }
-
-        let line = self.vertical_scroll + usize::from(row - area.y);
-        let column = self.horizontal_scroll + usize::from(column - area.x);
+        };
 
         if self.document.is_markdown()
             && let Some(destination) = self
@@ -950,7 +1030,7 @@ impl App {
                 .iter()
                 .find(|image| {
                     let end_line = image.line + usize::from(image.height);
-                    (image.line..end_line).contains(&line) && column >= image.column
+                    (image.line..end_line).contains(&line) && document_column >= image.column
                 })
                 .map(|image| {
                     image
@@ -964,12 +1044,8 @@ impl App {
         }
 
         let Some(destination) = self
-            .rendered
-            .links
-            .iter()
-            .find(|link| {
-                link.line == line && column >= link.start_column && column < link.end_column
-            })
+            .link_at_screen_position(column, row)
+            .and_then(|index| self.rendered.links.get(index))
             .map(|link| link.destination.clone())
         else {
             return;
@@ -977,20 +1053,35 @@ impl App {
 
         self.open_destination(&destination);
     }
-    fn open_destination(&mut self, destination: &str) {
-        if let Some(slug) = destination.strip_prefix('#') {
-            if let Some(heading) = self
-                .rendered
-                .headings
-                .iter()
-                .find(|heading| heading.slug == slug)
-            {
-                self.vertical_scroll = heading.line.min(self.max_vertical_scroll());
-                self.horizontal_scroll = 0;
-            }
-            return;
+
+    fn link_at_screen_position(&self, column: u16, row: u16) -> Option<usize> {
+        if !self.document.is_markdown() {
+            return None;
         }
 
+        hit_test_rendered_link(
+            &self.rendered.links,
+            self.viewport_area,
+            self.vertical_scroll,
+            self.horizontal_scroll,
+            column,
+            row,
+        )
+    }
+
+    fn open_destination(&mut self, destination: &str) {
+        match classify_link_destination(destination, self.base_dir.as_deref()) {
+            LinkDestination::Anchor(slug) => self.scroll_to_heading(&slug),
+            LinkDestination::LocalMarkdown { path, fragment } => {
+                if !self.load_markdown_document(&path, fragment) {
+                    self.open_external_destination(destination);
+                }
+            }
+            LinkDestination::External => self.open_external_destination(destination),
+        }
+    }
+
+    fn open_external_destination(&self, destination: &str) {
         let _ = if has_uri_scheme(destination) || Path::new(destination).is_absolute() {
             open::that(destination)
         } else if let Some(base_dir) = &self.base_dir {
@@ -998,6 +1089,135 @@ impl App {
         } else {
             open::that(destination)
         };
+    }
+
+    fn load_markdown_document(&mut self, path: &Path, fragment: Option<String>) -> bool {
+        let Some((input, document)) = Self::read_markdown_document(path, FormatArg::Auto) else {
+            return false;
+        };
+
+        if fragment.is_some() && input.source_path.as_deref() == self.source_path.as_deref() {
+            if let Some(slug) = fragment {
+                self.scroll_to_heading(&slug);
+            }
+            return true;
+        }
+
+        let Some(source_path) = input.source_path.clone() else {
+            return false;
+        };
+        let entry = NavigationEntry::new(source_path, input.display_title.clone());
+
+        self.record_current_history_viewport();
+        self.replace_document(input, document, fragment, None);
+        if let Some(history) = &mut self.navigation {
+            history.push(entry);
+        } else {
+            self.navigation = Some(NavigationHistory::new(entry));
+        }
+        true
+    }
+
+    fn read_markdown_document(path: &Path, format: FormatArg) -> Option<(Input, ViewDocument)> {
+        let input = read_input(Some(path), format).ok()?;
+        if input.kind != InputKind::Markdown {
+            return None;
+        }
+        let document = ViewDocument::from_input(&input).ok()?;
+        Some((input, document))
+    }
+
+    fn navigate_history(&mut self, direction: HistoryDirection) {
+        self.record_current_history_viewport();
+        let Some((target_index, entry)) = self
+            .navigation
+            .as_ref()
+            .and_then(|history| history.target(direction))
+            .map(|(index, entry)| (index, entry.clone()))
+        else {
+            return;
+        };
+        let Some((mut input, document)) =
+            Self::read_markdown_document(&entry.path, FormatArg::Markdown)
+        else {
+            return;
+        };
+
+        input.display_title = entry.display_name.clone();
+        self.replace_document(
+            input,
+            document,
+            None,
+            Some((entry.vertical_scroll, entry.horizontal_scroll)),
+        );
+        if let Some(history) = &mut self.navigation {
+            history.set_current(target_index);
+        }
+    }
+
+    fn record_current_history_viewport(&mut self) {
+        if let Some(history) = &mut self.navigation {
+            history.record_viewport(self.vertical_scroll, self.horizontal_scroll);
+        }
+    }
+
+    fn replace_document(
+        &mut self,
+        input: Input,
+        document: ViewDocument,
+        pending_anchor: Option<String>,
+        pending_viewport_restore: Option<(usize, usize)>,
+    ) {
+        let cleanup = self.images.clear_document_placements_sequence();
+        self.pending_graphics_cleanup.push_str(&cleanup);
+
+        self.name = input.name;
+        self.display_title = input.display_title;
+        self.kind = input.kind;
+        self.base_dir = input.base_dir;
+        self.source_path = input.source_path;
+        self.document = document;
+        self.search = SearchState::default();
+        self.rendered = RenderedDocument::default();
+        self.dirty = true;
+        self.last_width = 0;
+        self.last_height = 0;
+        self.vertical_scroll = 0;
+        self.horizontal_scroll = 0;
+        self.show_help = false;
+        self.help_scroll = 0;
+        self.help_max_scroll = 0;
+        self.help_page_height = 1;
+        self.recenter_image_after_render = false;
+        self.clear_selection();
+        self.clear_hover();
+        self.pending_anchor = pending_anchor;
+        self.pending_viewport_restore = pending_viewport_restore;
+    }
+
+    fn scroll_to_heading(&mut self, slug: &str) {
+        if let Some(heading) = self
+            .rendered
+            .headings
+            .iter()
+            .find(|heading| heading.slug == slug)
+        {
+            self.vertical_scroll = heading.line.min(self.max_vertical_scroll());
+            self.horizontal_scroll = 0;
+            self.clear_hover();
+        }
+    }
+
+    fn draw_pending_graphics_cleanup(&mut self, frame: &mut Frame, area: Rect) {
+        if self.pending_graphics_cleanup.is_empty() || area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let sequence = std::mem::take(&mut self.pending_graphics_cleanup);
+        frame.render_widget(
+            PreservingGraphicsCommand(sequence),
+            Rect::new(area.x, area.y, 1, 1),
+        );
     }
 
     fn draw_images(&mut self, frame: &mut Frame) {
@@ -1153,6 +1373,8 @@ impl App {
             return;
         }
 
+        self.clear_hover();
+
         let anchor = self
             .rendered
             .lines
@@ -1191,6 +1413,16 @@ impl App {
             self.recenter_image_after_render = false;
         }
 
+        if let Some(slug) = self.pending_anchor.take() {
+            self.scroll_to_heading(&slug);
+        }
+
+        if let Some((vertical_scroll, horizontal_scroll)) = self.pending_viewport_restore.take() {
+            self.vertical_scroll = vertical_scroll;
+            self.horizontal_scroll = horizontal_scroll;
+            self.clear_hover();
+        }
+
         self.clamp_scroll();
     }
 
@@ -1226,6 +1458,7 @@ impl App {
                 if occurrence == target_occurrence {
                     self.vertical_scroll = index.saturating_sub(self.viewport_height as usize / 4);
                     self.horizontal_scroll = 0;
+                    self.clear_hover();
                     return;
                 }
                 occurrence += 1;
@@ -1235,6 +1468,7 @@ impl App {
         if let Some(index) = fallback {
             self.vertical_scroll = index.saturating_sub(self.viewport_height as usize / 4);
             self.horizontal_scroll = 0;
+            self.clear_hover();
         }
     }
 
@@ -1297,6 +1531,25 @@ impl App {
                 .collect::<Vec<_>>()
         };
 
+        if let Some(link) = self
+            .hovered_link
+            .and_then(|index| self.rendered.links.get(index))
+            && let Some(line) = lines.get_mut(link.line)
+            && let Some(rendered_line) = self.rendered.lines.get(link.line)
+        {
+            let hover_style = self
+                .theme
+                .link
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD);
+            *line = patch_line_display_columns(
+                line,
+                &rendered_line.plain,
+                link.start_column,
+                link.end_column,
+                hover_style,
+            );
+        }
+
         if let Some(selection) = self.selection.filter(|selection| !selection.is_empty()) {
             let selection_style = Style::default().add_modifier(Modifier::REVERSED);
             for (index, line) in lines.iter_mut().enumerate() {
@@ -1317,6 +1570,10 @@ impl App {
         self.mouse_selecting = false;
         self.mouse_dragged = false;
         self.mouse_drag_position = None;
+    }
+
+    fn clear_hover(&mut self) {
+        self.hovered_link = None;
     }
 
     fn copy_selection(&mut self) {
@@ -1373,19 +1630,23 @@ impl App {
 
     fn scroll_down(&mut self, amount: usize) {
         self.vertical_scroll = (self.vertical_scroll + amount).min(self.max_vertical_scroll());
+        self.clear_hover();
     }
 
     fn scroll_up(&mut self, amount: usize) {
         self.vertical_scroll = self.vertical_scroll.saturating_sub(amount);
+        self.clear_hover();
     }
 
     fn scroll_right(&mut self, amount: usize) {
         self.horizontal_scroll =
             (self.horizontal_scroll + amount).min(self.max_horizontal_scroll());
+        self.clear_hover();
     }
 
     fn scroll_left(&mut self, amount: usize) {
         self.horizontal_scroll = self.horizontal_scroll.saturating_sub(amount);
+        self.clear_hover();
     }
 
     fn scroll_help_down(&mut self, amount: usize) {
@@ -1438,6 +1699,83 @@ impl App {
         self.vertical_scroll = self.vertical_scroll.min(self.max_vertical_scroll());
         self.horizontal_scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LinkDestination {
+    Anchor(String),
+    LocalMarkdown {
+        path: PathBuf,
+        fragment: Option<String>,
+    },
+    External,
+}
+
+fn classify_link_destination(destination: &str, base_dir: Option<&Path>) -> LinkDestination {
+    if let Some(slug) = destination.strip_prefix('#') {
+        return LinkDestination::Anchor(slug.to_string());
+    }
+
+    let (path_part, fragment) = destination
+        .split_once('#')
+        .map_or((destination, None), |(path, fragment)| {
+            (path, Some(fragment.to_string()))
+        });
+    let path = Path::new(path_part);
+
+    if path_part.is_empty()
+        || has_uri_scheme(destination) && !path.is_absolute()
+        || !is_markdown_path(path)
+    {
+        return LinkDestination::External;
+    }
+
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(base_dir) = base_dir {
+        base_dir.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    LinkDestination::LocalMarkdown { path, fragment }
+}
+
+fn document_position_at_screen(
+    viewport: Rect,
+    vertical_scroll: usize,
+    horizontal_scroll: usize,
+    column: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    if column < viewport.x
+        || row < viewport.y
+        || column >= viewport.x.saturating_add(viewport.width)
+        || row >= viewport.y.saturating_add(viewport.height)
+    {
+        return None;
+    }
+
+    Some((
+        vertical_scroll + usize::from(row - viewport.y),
+        horizontal_scroll + usize::from(column - viewport.x),
+    ))
+}
+
+fn hit_test_rendered_link(
+    links: &[RenderedLink],
+    viewport: Rect,
+    vertical_scroll: usize,
+    horizontal_scroll: usize,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let (line, column) =
+        document_position_at_screen(viewport, vertical_scroll, horizontal_scroll, column, row)?;
+
+    links.iter().position(|link| {
+        link.line == line && column >= link.start_column && column < link.end_column
+    })
 }
 
 fn style_background_rgb(style: Style, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
@@ -1626,6 +1964,45 @@ fn patch_line_range(
     output_line
 }
 
+fn patch_line_display_columns(
+    line: &Line<'static>,
+    plain: &str,
+    start_column: usize,
+    end_column: usize,
+    patch: Style,
+) -> Line<'static> {
+    let Some((start, end)) = byte_range_for_display_columns(plain, start_column, end_column) else {
+        return line.clone();
+    };
+    patch_line_range(line, plain, start, end, patch)
+}
+
+fn byte_range_for_display_columns(
+    text: &str,
+    start_column: usize,
+    end_column: usize,
+) -> Option<(usize, usize)> {
+    if start_column >= end_column {
+        return None;
+    }
+
+    let mut column = 0usize;
+    let mut start_byte = None;
+
+    for (byte, grapheme) in text.grapheme_indices(true) {
+        let next_column = column.saturating_add(UnicodeWidthStr::width(grapheme));
+        if start_byte.is_none() && next_column > start_column {
+            start_byte = Some(byte);
+        }
+        if start_byte.is_some() && next_column >= end_column {
+            return Some((start_byte.unwrap_or(byte), byte + grapheme.len()));
+        }
+        column = next_column;
+    }
+
+    None
+}
+
 fn selected_text(rendered: &RenderedDocument, selection: Selection) -> String {
     let (start, end) = selection.normalized();
     if start == end || start.line >= rendered.lines.len() {
@@ -1759,8 +2136,500 @@ impl Drop for MouseCaptureGuard {
 }
 
 #[cfg(test)]
-mod selection_tests {
+mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use crate::options::IconMode;
+
     use super::*;
+
+    static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let id = TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("iris-app-test-{}-{id}", std::process::id()));
+            fs::create_dir_all(&path).expect("test directory should be created");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn markdown_app(base_dir: Option<PathBuf>) -> App {
+        App::new(
+            Input {
+                data: crate::input::InputData::Text("# Old document".to_string()),
+                name: "old.md".to_string(),
+                display_title: "old.md".to_string(),
+                kind: InputKind::Markdown,
+                base_dir,
+                source_path: None,
+            },
+            ViewDocument::Markdown(crate::renderer::markdown::parse("# Old document")),
+            Theme::builtin_default(IconMode::Unicode).expect("built-in theme should load"),
+            false,
+            8,
+        )
+    }
+
+    fn markdown_app_from_file(path: &Path, title: Option<&str>) -> App {
+        let input = crate::input::read_input_with_title(Some(path), FormatArg::Auto, title)
+            .expect("Markdown fixture should load");
+        let document = ViewDocument::from_input(&input).expect("Markdown fixture should parse");
+        App::new(
+            input,
+            document,
+            Theme::builtin_default(IconMode::Unicode).expect("built-in theme should load"),
+            false,
+            8,
+        )
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn classifies_local_markdown_destinations_and_fragments() {
+        let base = Path::new("/project/docs");
+
+        for name in [
+            "guide.md",
+            "guide.markdown",
+            "guide.mdown",
+            "guide.mkd",
+            "guide.mkdn",
+        ] {
+            assert_eq!(
+                classify_link_destination(name, Some(base)),
+                LinkDestination::LocalMarkdown {
+                    path: base.join(name),
+                    fragment: None,
+                }
+            );
+        }
+        assert_eq!(
+            classify_link_destination("../README.md", Some(base)),
+            LinkDestination::LocalMarkdown {
+                path: base.join("../README.md"),
+                fragment: None,
+            }
+        );
+        assert_eq!(
+            classify_link_destination("guide.markdown#installation", Some(base)),
+            LinkDestination::LocalMarkdown {
+                path: base.join("guide.markdown"),
+                fragment: Some("installation".to_string()),
+            }
+        );
+
+        let absolute = PathBuf::from("/tmp/iris-absolute.mdown");
+        assert_eq!(
+            classify_link_destination(absolute.to_str().unwrap(), Some(base)),
+            LinkDestination::LocalMarkdown {
+                path: absolute,
+                fragment: None,
+            }
+        );
+    }
+
+    #[test]
+    fn non_markdown_and_stdin_inputs_do_not_create_file_history() {
+        let input = Input {
+            data: crate::input::InputData::Text("logs".to_string()),
+            name: "stdin".to_string(),
+            display_title: "journalctl -u ssh".to_string(),
+            kind: InputKind::Text,
+            base_dir: None,
+            source_path: None,
+        };
+        let document = ViewDocument::from_input(&input).unwrap();
+        let app = App::new(
+            input,
+            document,
+            Theme::builtin_default(IconMode::Unicode).unwrap(),
+            true,
+            4,
+        );
+
+        assert_eq!(app.name, "stdin");
+        assert_eq!(app.display_title, "journalctl -u ssh");
+        assert_eq!(app.navigation, None);
+        assert_eq!(
+            line_text(&app.viewer_title(80, None)),
+            " journalctl -u ssh "
+        );
+    }
+
+    #[test]
+    fn keeps_anchors_remote_markdown_and_other_files_external() {
+        let base = Path::new("/project");
+
+        assert_eq!(
+            classify_link_destination("#installation", Some(base)),
+            LinkDestination::Anchor("installation".to_string())
+        );
+        assert_eq!(
+            classify_link_destination("https://example.com/README.md", Some(base)),
+            LinkDestination::External
+        );
+        assert_eq!(
+            classify_link_destination("manual.pdf", Some(base)),
+            LinkDestination::External
+        );
+        assert_eq!(
+            classify_link_destination("notes.txt#section", Some(base)),
+            LinkDestination::External
+        );
+    }
+
+    #[test]
+    fn same_document_anchor_scrolls_without_replacing_document() {
+        let mut app = markdown_app(None);
+        app.viewport_height = 2;
+        app.rendered.lines = (0..8)
+            .map(|index| RenderedLine {
+                line: Line::from(index.to_string()),
+                plain: index.to_string(),
+                source_id: Some(index),
+            })
+            .collect();
+        app.rendered
+            .headings
+            .push(crate::renderer::RenderedHeading {
+                id: 4,
+                level: 2,
+                title: "Installation".to_string(),
+                slug: "installation".to_string(),
+                line: 4,
+            });
+        app.horizontal_scroll = 3;
+
+        app.open_destination("#installation");
+
+        assert_eq!(app.name, "old.md");
+        assert_eq!(app.vertical_scroll, 4);
+        assert_eq!(app.horizontal_scroll, 0);
+        assert_eq!(app.pending_anchor, None);
+        assert_eq!(app.navigation, None);
+    }
+
+    #[test]
+    fn markdown_history_restores_viewports_and_replaces_forward_branch() {
+        let directory = TestDirectory::new();
+        let readme = directory.path().join("README.md");
+        let guide = directory.path().join("guide.md");
+        let advanced = directory.path().join("advanced.md");
+        let other = directory.path().join("other.md");
+        let document = |title: &str| {
+            format!(
+                "# {title}\n\nThis is a deliberately long line for horizontal scrolling through the document.\n\nOne\n\nTwo\n\nThree\n\nFour\n\n# Installation\n\nDone\n"
+            )
+        };
+        fs::write(&readme, document("README")).unwrap();
+        fs::write(&guide, document("Guide")).unwrap();
+        fs::write(&advanced, document("Advanced")).unwrap();
+        fs::write(&other, document("Other")).unwrap();
+
+        let mut app = markdown_app_from_file(&readme, Some("IRIS Docs"));
+        app.viewport_width = 12;
+        app.viewport_height = 3;
+        app.ensure_rendered(12, 3);
+
+        let history = app.navigation.as_ref().unwrap();
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.current().path, fs::canonicalize(&readme).unwrap());
+        assert_eq!(history.current().display_name, "IRIS Docs");
+        assert!(line_text(&app.viewer_title(80, None)).contains("IRIS Docs"));
+
+        app.vertical_scroll = 3.min(app.max_vertical_scroll());
+        app.horizontal_scroll = 4.min(app.max_horizontal_scroll());
+        let readme_viewport = (app.vertical_scroll, app.horizontal_scroll);
+        app.open_destination("guide.md#installation");
+
+        let history = app.navigation.as_ref().unwrap();
+        assert_eq!(history.entries().len(), 2);
+        assert_eq!(history.current_index(), 1);
+        assert_eq!(
+            (
+                history.entries()[0].vertical_scroll,
+                history.entries()[0].horizontal_scroll,
+            ),
+            readme_viewport
+        );
+        assert_eq!(history.current().display_name, "guide.md");
+
+        app.ensure_rendered(12, 3);
+        assert!(
+            app.rendered
+                .headings
+                .iter()
+                .any(|heading| heading.slug == "installation")
+        );
+        let history_len = app.navigation.as_ref().unwrap().entries().len();
+        app.open_destination("guide.md#installation");
+        assert_eq!(
+            app.navigation.as_ref().unwrap().entries().len(),
+            history_len
+        );
+
+        app.vertical_scroll = 2.min(app.max_vertical_scroll());
+        app.horizontal_scroll = 3.min(app.max_horizontal_scroll());
+        let guide_viewport = (app.vertical_scroll, app.horizontal_scroll);
+        app.open_destination("advanced.md");
+        app.ensure_rendered(12, 3);
+        app.vertical_scroll = 4.min(app.max_vertical_scroll());
+        app.horizontal_scroll = 5.min(app.max_horizontal_scroll());
+        let advanced_viewport = (app.vertical_scroll, app.horizontal_scroll);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.navigation.as_ref().unwrap().current_index(), 1);
+        app.ensure_rendered(12, 3);
+        assert_eq!((app.vertical_scroll, app.horizontal_scroll), guide_viewport);
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.navigation.as_ref().unwrap().current_index(), 2);
+        app.ensure_rendered(12, 3);
+        assert_eq!(
+            (app.vertical_scroll, app.horizontal_scroll),
+            advanced_viewport
+        );
+        let horizontal_before = app.horizontal_scroll;
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.navigation.as_ref().unwrap().current_index(), 2);
+        assert_eq!(app.horizontal_scroll, horizontal_before.saturating_sub(1));
+
+        app.navigate_history(HistoryDirection::Back);
+        app.ensure_rendered(12, 3);
+        app.open_destination("other.md");
+        let history = app.navigation.as_ref().unwrap();
+        assert_eq!(history.current_index(), 2);
+        assert_eq!(
+            history
+                .entries()
+                .iter()
+                .map(|entry| entry.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["IRIS Docs", "guide.md", "other.md"]
+        );
+        assert_eq!(history.target(HistoryDirection::Forward), None);
+
+        app.navigate_history(HistoryDirection::Back);
+        app.navigate_history(HistoryDirection::Back);
+        app.ensure_rendered(12, 3);
+        assert_eq!(
+            (app.vertical_scroll, app.horizontal_scroll),
+            readme_viewport
+        );
+        let current = app.navigation.as_ref().unwrap().current_index();
+        app.navigate_history(HistoryDirection::Back);
+        assert_eq!(app.navigation.as_ref().unwrap().current_index(), current);
+    }
+
+    #[test]
+    fn hit_tests_links_with_vertical_and_horizontal_scrolling() {
+        let links = vec![
+            RenderedLink {
+                source_id: 1,
+                destination: "first.md".to_string(),
+                line: 12,
+                start_column: 8,
+                end_column: 14,
+            },
+            RenderedLink {
+                source_id: 1,
+                destination: "first.md".to_string(),
+                line: 13,
+                start_column: 0,
+                end_column: 5,
+            },
+        ];
+        let viewport = Rect::new(3, 2, 20, 5);
+
+        assert_eq!(
+            hit_test_rendered_link(&links, viewport, 10, 5, 6, 4),
+            Some(0)
+        );
+        assert_eq!(
+            hit_test_rendered_link(&links, viewport, 10, 0, 5, 5),
+            Some(1)
+        );
+        assert_eq!(hit_test_rendered_link(&links, viewport, 10, 5, 12, 4), None);
+        assert_eq!(hit_test_rendered_link(&links, viewport, 10, 5, 2, 4), None);
+    }
+
+    #[test]
+    fn hover_style_uses_display_columns_across_unicode_spans() {
+        let plain = "前🔗e\u{301}後";
+        let line = Line::from(vec![
+            Span::raw("前"),
+            Span::styled("🔗", Style::default().fg(Color::Blue)),
+            Span::styled("e\u{301}", Style::default().fg(Color::Cyan)),
+            Span::raw("後"),
+        ]);
+        let hover = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+
+        assert_eq!(byte_range_for_display_columns(plain, 2, 5), Some((3, 10)));
+        let patched = patch_line_display_columns(&line, plain, 2, 5, hover);
+
+        assert!(!patched.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(patched.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert!(patched.spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!patched.spans[3].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            patched
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            plain
+        );
+    }
+
+    #[test]
+    fn mouse_movement_sets_and_clears_hovered_link() {
+        let mut app = markdown_app(None);
+        app.viewport_area = Rect::new(10, 5, 20, 4);
+        app.rendered.links.push(RenderedLink {
+            source_id: 1,
+            destination: "guide.md".to_string(),
+            line: 0,
+            start_column: 2,
+            end_column: 7,
+        });
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 13,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.hovered_link, Some(0));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 10,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.hovered_link, None);
+    }
+
+    #[test]
+    fn opening_markdown_replaces_document_state_and_defers_fragment() {
+        let directory = TestDirectory::new();
+        let docs = directory.path().join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(
+            docs.join("guide.md"),
+            "# Guide\n\nIntroduction\n\n# Installation\n\nSteps\n\nMore details\n",
+        )
+        .unwrap();
+
+        let mut app = markdown_app(Some(directory.path().to_path_buf()));
+        let theme_name = app.theme.name.clone();
+        app.rendered.lines.push(RenderedLine {
+            line: Line::from("old"),
+            plain: "old".to_string(),
+            source_id: Some(1),
+        });
+        app.rendered.links.push(RenderedLink {
+            source_id: 1,
+            destination: "stale.md".to_string(),
+            line: 0,
+            start_column: 0,
+            end_column: 3,
+        });
+        app.dirty = false;
+        app.last_width = 80;
+        app.last_height = 20;
+        app.viewport_height = 2;
+        app.vertical_scroll = 4;
+        app.horizontal_scroll = 3;
+        app.search.active = true;
+        app.search.query = "old".to_string();
+        app.search.matches = vec![SearchMatch::text(1, 0)];
+        app.search.current = Some(0);
+        app.selection = Some(Selection::new(
+            DocumentPosition { line: 0, byte: 0 },
+            DocumentPosition { line: 0, byte: 3 },
+        ));
+        app.mouse_selecting = true;
+        app.mouse_dragged = true;
+        app.mouse_drag_position = Some((4, 4));
+        app.hovered_link = Some(0);
+        app.show_help = true;
+        app.recenter_image_after_render = true;
+        app.pending_viewport_restore = Some((8, 9));
+
+        app.open_destination("docs/guide.md#installation");
+
+        assert_eq!(app.name, "guide.md");
+        assert_eq!(app.kind, InputKind::Markdown);
+        assert_eq!(app.base_dir.as_deref(), Some(docs.as_path()));
+        assert!(app.document.is_markdown());
+        assert!(app.rendered.lines.is_empty());
+        assert!(app.rendered.links.is_empty());
+        assert!(app.dirty);
+        assert_eq!((app.last_width, app.last_height), (0, 0));
+        assert_eq!((app.vertical_scroll, app.horizontal_scroll), (0, 0));
+        assert!(!app.search.active);
+        assert!(app.search.query.is_empty());
+        assert!(app.search.matches.is_empty());
+        assert_eq!(app.selection, None);
+        assert!(!app.mouse_selecting);
+        assert!(!app.mouse_dragged);
+        assert_eq!(app.mouse_drag_position, None);
+        assert_eq!(app.hovered_link, None);
+        assert!(!app.show_help);
+        assert!(!app.recenter_image_after_render);
+        assert_eq!(app.pending_anchor.as_deref(), Some("installation"));
+        assert_eq!(app.pending_viewport_restore, None);
+        assert_eq!(app.theme.name, theme_name);
+        assert!(!app.wrap);
+        assert_eq!(app.tab_width, 8);
+        assert_eq!(
+            classify_link_destination("advanced.md", app.base_dir.as_deref()),
+            LinkDestination::LocalMarkdown {
+                path: docs.join("advanced.md"),
+                fragment: None,
+            }
+        );
+
+        app.ensure_rendered(40, 2);
+
+        let heading_line = app
+            .rendered
+            .headings
+            .iter()
+            .find(|heading| heading.slug == "installation")
+            .unwrap()
+            .line;
+        assert_eq!(app.pending_anchor, None);
+        assert_eq!(
+            app.vertical_scroll,
+            heading_line.min(app.max_vertical_scroll())
+        );
+        assert_eq!(app.horizontal_scroll, 0);
+    }
 
     #[test]
     fn grapheme_bounds_follow_terminal_columns() {

@@ -27,6 +27,10 @@ pub struct Cli {
     #[arg(long)]
     pub theme: Option<String>,
 
+    /// Override the title shown in the viewer border.
+    #[arg(long, value_name = "TITLE")]
+    pub title: Option<String>,
+
     #[arg(long)]
     pub list_themes: bool,
 
@@ -38,4 +42,19 @@ pub struct Cli {
 
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "wrap")]
     pub no_wrap: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn parses_explicit_title() {
+        let cli = Cli::try_parse_from(["iris", "--title", "SSH logs", "-"]).unwrap();
+
+        assert_eq!(cli.title.as_deref(), Some("SSH logs"));
+        assert_eq!(cli.input.as_deref(), Some(std::path::Path::new("-")));
+    }
 }

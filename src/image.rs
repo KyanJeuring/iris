@@ -238,6 +238,34 @@ impl ImageManager {
         sequence
     }
 
+    pub fn clear_document_placements_sequence(&mut self) -> String {
+        let fast_kitty = self.picker.as_ref().is_some_and(|picker| {
+            picker.protocol_type() == ProtocolType::Kitty && !picker.tmux_detected()
+        });
+        if !fast_kitty {
+            self.active_generated_kitty_placements.clear();
+            return String::new();
+        }
+
+        let mut ids = self
+            .kitty_fast_images
+            .values()
+            .map(|image| image.id)
+            .chain(
+                self.active_generated_kitty_placements
+                    .iter()
+                    .map(|key| kitty_generated_image_id(key)),
+            )
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        self.active_generated_kitty_placements.clear();
+
+        ids.into_iter()
+            .map(|id| format!("\x1b_Ga=d,d=i,i={id},p=1,q=2\x1b\\"))
+            .collect()
+    }
+
     pub fn generated_kitty_viewport_sequence(
         &mut self,
         identity_key: &str,

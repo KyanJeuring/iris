@@ -138,6 +138,13 @@ fn append_text(text: &str, piece: &StyledPiece, line: &mut WrappedLine, line_wid
     line.plain.push_str(text);
     line.spans.push(Span::styled(text.to_string(), piece.style));
     if let Some(destination) = &piece.link {
+        if let Some(link) = line.links.last_mut()
+            && link.destination == *destination
+            && link.end_column == start
+        {
+            link.end_column = start + width;
+            return;
+        }
         line.links.push(WrappedLink {
             destination: destination.clone(),
             start_column: start,
@@ -190,6 +197,31 @@ mod tests {
         assert_eq!(lines[0].links[0].start_column, 0);
         assert_eq!(lines[0].links[0].end_column, 4);
     }
+
+    #[test]
+    fn combines_words_spaces_and_styles_into_one_link_range() {
+        let destination = "guide.md";
+        let lines = wrap_pieces(
+            &[
+                StyledPiece::linked("test", Style::default(), destination),
+                StyledPiece::linked(" ", Style::default(), destination),
+                StyledPiece::linked(
+                    "link",
+                    Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+                    destination,
+                ),
+            ],
+            80,
+            true,
+            4,
+        );
+
+        assert_eq!(lines[0].plain, "test link");
+        assert_eq!(lines[0].links.len(), 1);
+        assert_eq!(lines[0].links[0].start_column, 0);
+        assert_eq!(lines[0].links[0].end_column, 9);
+    }
+
     #[test]
     fn measures_cjk_and_emoji_by_terminal_display_width() {
         assert_eq!(UnicodeWidthStr::width("你好"), 4);
